@@ -156,9 +156,22 @@ public_api::TestInfo TrainingClient::GetTestInfo() {
 }
 
 bool TrainingClient::SendFile(unsigned char* file_buf, size_t file_size) {
-    (void)file_buf;
-    (void)file_size;
-    return false;
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    if (!api_.send_file_buffer(handle_,
+                               file_buf,
+                               static_cast<unsigned long long>(file_size),
+                               "upload_buffer.bin")) {
+        ThrowLastError("failed to call Training_SendFileBuffer: ");
+    }
+    return true;
+}
+
+bool TrainingClient::SendFileByPath(const std::string& file_path) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    if (!api_.send_file_path(handle_, file_path.c_str())) {
+        ThrowLastError("failed to call Training_SendFilePath: ");
+    }
+    return true;
 }
 
 /* ---------------------------------------
@@ -248,6 +261,8 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
     api.get_test_double = ResolveSymbol<TrainingGetTestDoubleFn>(library_handle, "Training_GetTestDouble");
     api.get_test_string = ResolveSymbol<TrainingGetTestStringFn>(library_handle, "Training_GetTestString");
     api.get_test_info = ResolveSymbol<TrainingGetTestInfoFn>(library_handle, "Training_GetTestInfo");
+    api.send_file_buffer = ResolveSymbol<TrainingSendFileBufferFn>(library_handle, "Training_SendFileBuffer");
+    api.send_file_path = ResolveSymbol<TrainingSendFilePathFn>(library_handle, "Training_SendFilePath");
     api.get_last_error = ResolveSymbol<TrainingGetLastErrorFn>(library_handle, "Training_GetLastError");
     api.pump_events = ResolveSymbol<TrainingPumpEventsFn>(library_handle, "Training_PumpEvents");
     return api;

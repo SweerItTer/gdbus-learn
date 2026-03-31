@@ -2,7 +2,11 @@
 
 #include <public/DbusConstants.hpp>
 #include <utils/ContractSerializer.hpp>
+#include <utils/FileTransferUtils.hpp>
 
+#include <chrono>
+#include <cstring>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -55,6 +59,11 @@ auto CallWithError(Fn&& fn, const char* message) {
     }
 
     return result;
+}
+
+std::string CreateTransferId() {
+    return "transfer_" + std::to_string(::getpid()) + "_" +
+           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 }
 
 } // namespace detail
@@ -267,6 +276,117 @@ bool TrainingLibraryClient::GetTestInfo(public_api::TestInfo* result) {
     return true;
 }
 
+/* ---------------------------------------
+ *          文件分包发送实现
+ * --------------------------------------- */
+bool TrainingLibraryClient::SendChunks(const std::string& file_name,
+                                       std::uint64_t total_size,
+                                       const std::string& md5_hex,
+                                       const std::function<std::size_t(unsigned char*, std::size_t)>& reader) {
+    const std::uint32_t chunk_count = total_size == 0
+                                          ? 1
+                                          : static_cast<std::uint32_t>((total_size + utils::kFileChunkSize - 1) /
+                                                                       utils::kFileChunkSize);
+    const std::string transfer_id = detail::CreateTransferId();
+    const std::string shm_name = "/training_file_" + std::to_string(::getpid()) + "_" +
+                                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+
+    auto shm_fd = utils::OpenSharedMemory(shm_name, O_CREAT | O_RDWR | O_TRUNC);
+    utils::ResizeSharedMemory(shm_fd.Get(), utils::kFileChunkSize);
+    auto mapped = utils::MapSharedMemory(shm_fd.Get(), utils::kFileChunkSize, PROT_READ | PROT_WRITE);
+    auto* mapped_bytes = static_cast<unsigned char*>(mapped.Get());
+
+    for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+        const std::size_t current_size = reader(mapped_bytes, utils::kFileChunkSize);
+        gboolean result = FALSE;
+
+        detail::CallWithError(
+            [&](GError** error) {
+                return training_call_send_file_chunk_sync(proxy_.get(),
+                                                          transfer_id.c_str(),
+                                                          file_name.c_str(),
+                                                          total_size,
+                                                          chunk_index,
+                                                          chunk_count,
+                                                          static_cast<guint>(current_size),
+                                                          md5_hex.c_str(),
+                                                          shm_name.c_str(),
+                                                          &result,
+                                                          nullptr,
+                                                          error);
+            },
+            "failed to call SendFileChunk: ");
+
+        if (!result) {
+            utils::UnlinkSharedMemory(shm_name);
+            throw std::runtime_error("SendFileChunk returned false");
+        }
+    }
+
+    utils::UnlinkSharedMemory(shm_name);
+    return true;
+}
+
+bool TrainingLibraryClient::SendFileBuffer(const unsigned char* file_buf, std::size_t file_size, const char* file_name) {
+    if (file_buf == nullptr && file_size != 0) {
+        throw std::runtime_error("file buffer is null");
+    }
+
+    const std::filesystem::path temp_source =
+        std::filesystem::temp_directory_path() /
+        ("training_buffer_" + std::to_string(::getpid()) + ".bin");
+    {
+        std::ofstream output(temp_source, std::ios::binary | std::ios::trunc);
+        if (!output.is_open()) {
+            throw std::runtime_error("failed to create temp source file for md5");
+        }
+        output.write(reinterpret_cast<const char*>(file_buf), static_cast<std::streamsize>(file_size));
+    }
+
+    const std::string md5_hex = utils::ComputeMd5(temp_source);
+    std::filesystem::remove(temp_source);
+
+    std::size_t offset = 0;
+    return SendChunks(file_name != nullptr ? file_name : "upload_buffer.bin",
+                      file_size,
+                      md5_hex,
+                      [&](unsigned char* destination, std::size_t capacity) {
+                          const std::size_t remain = file_size - offset;
+                          const std::size_t chunk_size = remain < capacity ? remain : capacity;
+                          if (chunk_size > 0) {
+                              std::memcpy(destination, file_buf + offset, chunk_size);
+                              offset += chunk_size;
+                          }
+                          return chunk_size;
+                      });
+}
+
+bool TrainingLibraryClient::SendFilePath(const char* file_path) {
+    if (file_path == nullptr || std::string(file_path).empty()) {
+        throw std::runtime_error("file path is empty");
+    }
+
+    const std::filesystem::path path(file_path);
+    if (!std::filesystem::exists(path) || !std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error("file path is invalid");
+    }
+
+    const std::uint64_t total_size = std::filesystem::file_size(path);
+    const std::string md5_hex = utils::ComputeMd5(path);
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        throw std::runtime_error("failed to open source file");
+    }
+
+    return SendChunks(path.filename().string(),
+                      total_size,
+                      md5_hex,
+                      [&](unsigned char* destination, std::size_t capacity) {
+                          input.read(reinterpret_cast<char*>(destination), static_cast<std::streamsize>(capacity));
+                          return static_cast<std::size_t>(input.gcount());
+                      });
+}
+
 void TrainingLibraryClient::PumpEvents() {
     detail::DrainPendingSignals();
 }
@@ -476,6 +596,31 @@ extern "C" bool Training_GetTestInfo(TrainingLibraryHandle* handle, training::pu
     }
     return training::library::detail::InvokeWithError([&]() {
         handle->client.GetTestInfo(result);
+    });
+}
+
+extern "C" bool Training_SendFileBuffer(TrainingLibraryHandle* handle,
+                                        const unsigned char* file_buf,
+                                        unsigned long long file_size,
+                                        const char* file_name) {
+    if (handle == nullptr) {
+        return false;
+    }
+    return training::library::detail::InvokeWithError([&]() {
+        if (!handle->client.SendFileBuffer(file_buf, static_cast<std::size_t>(file_size), file_name)) {
+            throw std::runtime_error("SendFileBuffer returned false");
+        }
+    });
+}
+
+extern "C" bool Training_SendFilePath(TrainingLibraryHandle* handle, const char* file_path) {
+    if (handle == nullptr) {
+        return false;
+    }
+    return training::library::detail::InvokeWithError([&]() {
+        if (!handle->client.SendFilePath(file_path)) {
+            throw std::runtime_error("SendFilePath returned false");
+        }
     });
 }
 

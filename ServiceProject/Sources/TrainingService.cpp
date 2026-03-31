@@ -2,9 +2,11 @@
 
 #include <public/DbusConstants.hpp>
 #include <utils/ContractSerializer.hpp>
+#include <utils/FileTransferUtils.hpp>
 
 #include "training-generated.h"
 
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -31,6 +33,7 @@ TrainingService::TrainingService()
     g_signal_connect(skeleton_.get(), "handle-get-test-double", G_CALLBACK(&TrainingService::OnHandleGetTestDouble), this);
     g_signal_connect(skeleton_.get(), "handle-get-test-string", G_CALLBACK(&TrainingService::OnHandleGetTestString), this);
     g_signal_connect(skeleton_.get(), "handle-get-test-info", G_CALLBACK(&TrainingService::OnHandleGetTestInfo), this);
+    g_signal_connect(skeleton_.get(), "handle-send-file-chunk", G_CALLBACK(&TrainingService::OnHandleSendFileChunk), this);
 
     // 将 skeleton 和 connection 上的 ObjectPath 关联
     GError* raw_error = nullptr;
@@ -104,9 +107,18 @@ public_api::TestInfo TrainingService::GetTestInfo() {
 }
 
 bool TrainingService::SendFile(unsigned char* file_buf, size_t file_size) {
-    (void)file_buf;
-    (void)file_size;
-    return false;
+    if (file_buf == nullptr && file_size != 0) {
+        return false;
+    }
+
+    const auto target_path = utils::GetExecutableDir() / "upload_buffer.bin";
+    std::ofstream output(target_path, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+        return false;
+    }
+
+    output.write(reinterpret_cast<const char*>(file_buf), static_cast<std::streamsize>(file_size));
+    return output.good();
 }
 
 /* ---------------------------------------
@@ -213,6 +225,173 @@ gboolean TrainingService::OnHandleGetTestInfo(Training* object,
     auto* self = static_cast<TrainingService*>(user_data);
     training_complete_get_test_info(object, invocation, utils::TestInfoToVariant(self->GetTestInfo()));
     return TRUE;
+}
+
+gboolean TrainingService::OnHandleSendFileChunk(Training* object,
+                                                GDBusMethodInvocation* invocation,
+                                                const gchar* transfer_id,
+                                                const gchar* file_name,
+                                                guint64 total_size,
+                                                guint chunk_index,
+                                                guint chunk_count,
+                                                guint chunk_size,
+                                                const gchar* md5_hex,
+                                                const gchar* shm_name,
+                                                gpointer user_data) {
+    auto* self = static_cast<TrainingService*>(user_data);
+    // 获取唯一的连接ID
+    const char* sender = g_dbus_method_invocation_get_sender(invocation);
+    bool ok = false;
+    try {
+        // 传递参数
+        ok = self->HandleIncomingFileChunk(sender != nullptr ? sender : "",
+                                           transfer_id != nullptr ? transfer_id : "",
+                                           file_name != nullptr ? file_name : "",
+                                           total_size,
+                                           chunk_index,
+                                           chunk_count,
+                                           chunk_size,
+                                           md5_hex != nullptr ? md5_hex : "",
+                                           shm_name != nullptr ? shm_name : "");
+    } catch (...) {
+        self->ResetFileTransfer(true);
+        ok = false;
+    }
+    training_complete_send_file_chunk(object, invocation, ok);
+    return TRUE;
+}
+
+bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
+                                              const std::string& transfer_id,
+                                              const std::string& file_name,
+                                              std::uint64_t total_size,
+                                              std::uint32_t chunk_index,
+                                              std::uint32_t chunk_count,
+                                              std::uint32_t chunk_size,
+                                              const std::string& md5_hex,
+                                              const std::string& shm_name) {
+    if (sender.empty() || transfer_id.empty() || file_name.empty() || md5_hex.empty() || shm_name.empty()) {
+        return false;
+    }
+
+    // 限制1K
+    if (chunk_count == 0 || chunk_size > utils::kFileChunkSize) {
+        return false;
+    }
+    
+    if (!file_transfer_.active) {
+        if (chunk_index != 0) {
+            return false;
+        }
+
+        file_transfer_.active = true;
+        file_transfer_.owner_sender = sender;
+        file_transfer_.transfer_id = transfer_id;
+        file_transfer_.file_name = file_name;
+        file_transfer_.total_size = total_size;
+        file_transfer_.chunk_count = chunk_count; // 切片总数
+        file_transfer_.next_expected_chunk = 0;
+        file_transfer_.received_size = 0;
+        file_transfer_.expected_md5 = md5_hex;
+        file_transfer_.temp_file_path = utils::GetExecutableDir() / ("." + transfer_id + ".part");
+        std::filesystem::remove(file_transfer_.temp_file_path); // 直接删除已经存在的文件(覆盖)
+    } else if (file_transfer_.owner_sender != sender) {
+        // 只允许一个活跃传输，后来者直接拒绝
+        return false;
+    }
+
+    // 发送中断(sender一致但是数据对不上)
+    if (file_transfer_.transfer_id != transfer_id ||
+        file_transfer_.file_name != file_name ||
+        file_transfer_.total_size != total_size ||
+        file_transfer_.chunk_count != chunk_count ||
+        file_transfer_.expected_md5 != md5_hex) {
+        // 删除旧文件
+        ResetFileTransfer(true);
+        return false;
+    }
+
+    // 校验下一段数据标号
+    if (chunk_index != file_transfer_.next_expected_chunk) {
+        ResetFileTransfer(true);
+        return false;
+    }
+
+    // 校验总大小
+    if (file_transfer_.received_size + chunk_size > file_transfer_.total_size) {
+        ResetFileTransfer(true);
+        return false;
+    }
+
+    try {
+        // 只读共享内存，并且获取共享内存对象的fd
+        auto shm_fd = utils::OpenSharedMemory(shm_name, O_RDONLY);
+        // 只读映射共享内存数据
+        auto mapped = utils::MapSharedMemory(shm_fd.Get(), utils::kFileChunkSize, PROT_READ);
+
+        // 打开.part文件
+        std::ofstream output(file_transfer_.temp_file_path, std::ios::binary | std::ios::app);
+        if (!output.is_open()) {
+            ResetFileTransfer(true);
+            return false;
+        }
+        // 读取chunk_size长度的内存数据追加到.part文件
+        output.write(static_cast<const char*>(mapped.Get()), static_cast<std::streamsize>(chunk_size));
+        if (!output.good()) {
+            ResetFileTransfer(true);
+            return false;
+        }
+    } catch (...) {
+        ResetFileTransfer(true);
+        return false;
+    }
+
+    // 更新接受的数据
+    file_transfer_.received_size += chunk_size;
+    // 更新下一判断标号
+    file_transfer_.next_expected_chunk += 1;
+
+    // 最后一包到达
+    if (chunk_index + 1 == chunk_count) {
+        try {
+            // 校验和重命名 (test.txt.part->text.txt)
+            const bool finalized = FinalizeFileTransfer();
+            ResetFileTransfer(!finalized);
+            return finalized;
+        } catch (...) {
+            ResetFileTransfer(true);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool TrainingService::FinalizeFileTransfer() {
+    // 校验接收数据总量大小
+    if (file_transfer_.received_size != file_transfer_.total_size) {
+        return false;
+    }
+
+    // 使用工具完成MD5校验
+    const std::string actual_md5 = utils::ComputeMd5(file_transfer_.temp_file_path);
+    if (actual_md5 != file_transfer_.expected_md5) {
+        return false;
+    }
+
+    // 获取可执行文件根目录路径
+    const auto target_path = utils::GetExecutableDir() / file_transfer_.file_name;
+    std::filesystem::remove(target_path);
+    std::filesystem::rename(file_transfer_.temp_file_path, target_path);
+    return true;
+}
+
+// 删除旧文件并重置状态
+void TrainingService::ResetFileTransfer(bool remove_temp_file) {
+    if (remove_temp_file && !file_transfer_.temp_file_path.empty()) {
+        std::filesystem::remove(file_transfer_.temp_file_path);
+    }
+    file_transfer_ = FileTransferState{};
 }
 
 } // namespace training::service

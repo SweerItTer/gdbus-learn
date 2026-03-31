@@ -19,6 +19,7 @@ void PrintMenu() {
               << "8. GetTestDouble\n"
               << "9. GetTestString\n"
               << "10. GetTestInfo\n"
+              << "11. SendFilePath\n"
               << "0. Exit\n"
               << "Select: ";
 }
@@ -128,6 +129,12 @@ int main() {
                 std::cout << "GetTestInfo -> ";
                 PrintInfo(client.GetTestInfo());
                 break;
+            case 11: {
+                const auto value = ReadLine("file path: ");
+                std::cout << "SendFilePath -> " << std::boolalpha << client.SendFileByPath(value) << std::noboolalpha
+                          << std::endl;
+                break;
+            }
             default:
                 std::cout << "Unknown option." << std::endl;
                 break;

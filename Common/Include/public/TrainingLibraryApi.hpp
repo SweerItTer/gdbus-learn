@@ -33,6 +33,11 @@ typedef bool (*TrainingGetTestDoubleFn)(TrainingLibraryHandle* handle, double* r
 typedef bool (*TrainingGetTestStringFn)(TrainingLibraryHandle* handle, const char** result);
 typedef bool (*TrainingGetTestInfoFn)(TrainingLibraryHandle* handle,
                                       training::public_api::TestInfo* result);
+typedef bool (*TrainingSendFileBufferFn)(TrainingLibraryHandle* handle,
+                                         const unsigned char* file_buf,
+                                         unsigned long long file_size,
+                                         const char* file_name);
+typedef bool (*TrainingSendFilePathFn)(TrainingLibraryHandle* handle, const char* file_path);
 typedef const char* (*TrainingGetLastErrorFn)(void);
 typedef void (*TrainingPumpEventsFn)(TrainingLibraryHandle* handle);
 
@@ -50,6 +55,11 @@ bool Training_GetTestInt(TrainingLibraryHandle* handle, int* result);
 bool Training_GetTestDouble(TrainingLibraryHandle* handle, double* result);
 bool Training_GetTestString(TrainingLibraryHandle* handle, const char** result);
 bool Training_GetTestInfo(TrainingLibraryHandle* handle, training::public_api::TestInfo* result);
+bool Training_SendFileBuffer(TrainingLibraryHandle* handle,
+                             const unsigned char* file_buf,
+                             unsigned long long file_size,
+                             const char* file_name);
+bool Training_SendFilePath(TrainingLibraryHandle* handle, const char* file_path);
 const char* Training_GetLastError(void);
 void Training_PumpEvents(TrainingLibraryHandle* handle);
 

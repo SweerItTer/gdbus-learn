@@ -40,6 +40,17 @@
     <method name="GetTestInfo">     <!-- 数据序列 -->
       <arg name="result" type="(bids)" direction="out"/>
     </method>
+    <method name="SendFileChunk">
+      <arg name="transfer_id" type="s" direction="in"/>
+      <arg name="file_name" type="s" direction="in"/>
+      <arg name="total_size" type="t" direction="in"/>
+      <arg name="chunk_index" type="u" direction="in"/>
+      <arg name="chunk_count" type="u" direction="in"/>
+      <arg name="chunk_size" type="u" direction="in"/>
+      <arg name="md5_hex" type="s" direction="in"/>
+      <arg name="shm_name" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
   <!-- 信号 -->
     <signal name="OnTestBoolChanged">
       <arg name="param" type="b"/>

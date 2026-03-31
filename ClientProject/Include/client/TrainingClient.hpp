@@ -27,6 +27,8 @@ public:
         TrainingGetTestDoubleFn get_test_double{nullptr};
         TrainingGetTestStringFn get_test_string{nullptr};
         TrainingGetTestInfoFn get_test_info{nullptr};
+        TrainingSendFileBufferFn send_file_buffer{nullptr};
+        TrainingSendFilePathFn send_file_path{nullptr};
         TrainingGetLastErrorFn get_last_error{nullptr};
         TrainingPumpEventsFn pump_events{nullptr};
     };
@@ -49,6 +51,7 @@ public:
     std::string GeTestString() override;
     public_api::TestInfo GetTestInfo() override;
     bool SendFile(unsigned char* file_buf, size_t file_size) override;
+    bool SendFileByPath(const std::string& file_path);
 
     void OnTestBoolChanged(bool param) override;
     void OnTestIntChanged(int param) override;
