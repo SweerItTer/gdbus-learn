@@ -1,0 +1,5 @@
+build/
+client.log
+service.log
+.vscode/
+docs/

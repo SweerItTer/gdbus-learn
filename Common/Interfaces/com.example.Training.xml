@@ -1,0 +1,60 @@
+<!DOCTYPE node PUBLIC
+  "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node name="/com/example/Training">
+  <interface name="com.example.Training">
+  <!-- set方法 -->
+    <method name="SetTestBool">
+      <arg name="param" type="b" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <method name="SetTestInt">
+      <arg name="param" type="i" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <method name="SetTestDouble">
+      <arg name="param" type="d" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <method name="SetTestString">
+      <arg name="param" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <method name="SetTestInfo">
+      <arg name="param" type="(bids)" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+  <!-- get方法 -->
+    <method name="GetTestBool">
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <method name="GetTestInt">
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <method name="GetTestDouble">
+      <arg name="result" type="d" direction="out"/>
+    </method>
+    <method name="GetTestString">
+      <arg name="result" type="s" direction="out"/>
+    </method>
+    <method name="GetTestInfo">
+      <arg name="result" type="(bids)" direction="out"/>
+    </method>
+  <!-- 信号 -->
+    <signal name="OnTestBoolChanged">
+      <arg name="param" type="b"/>
+    </signal>
+    <signal name="OnTestIntChanged">
+      <arg name="param" type="i"/>
+    </signal>
+    <signal name="OnTestDoubleChanged">
+      <arg name="param" type="d"/>
+    </signal>
+    <signal name="OnTestStringChanged">
+      <arg name="param" type="s"/>
+    </signal>
+    <signal name="OnTestInfoChanged">
+      <arg name="param" type="(bids)"/>
+    </signal>
+  </interface>
+</node>
