@@ -218,31 +218,54 @@ void TrainingClient::OnTestInfoChanged(public_api::TestInfo param) {
 }
 
 /* ---------------------------------------
- *       信号转发(实际调用self下方法)  
+ *       信号转发(可重写的远端入口)
  * --------------------------------------- */
-void TrainingClient::OnRemoteTestBoolChanged(void* user_data, bool param) {
-    auto* self = static_cast<TrainingClient*>(user_data);
-    self->OnTestBoolChanged(param);
+void TrainingClient::OnRemoteTestBoolChanged(bool param) {
+    OnTestBoolChanged(param);
 }
 
-void TrainingClient::OnRemoteTestIntChanged(void* user_data, int param) {
-    auto* self = static_cast<TrainingClient*>(user_data);
-    self->OnTestIntChanged(param);
+void TrainingClient::OnRemoteTestIntChanged(int param) {
+    OnTestIntChanged(param);
 }
 
-void TrainingClient::OnRemoteTestDoubleChanged(void* user_data, double param) {
-    auto* self = static_cast<TrainingClient*>(user_data);
-    self->OnTestDoubleChanged(param);
+void TrainingClient::OnRemoteTestDoubleChanged(double param) {
+    OnTestDoubleChanged(param);
 }
 
-void TrainingClient::OnRemoteTestStringChanged(void* user_data, const char* param) {
-    auto* self = static_cast<TrainingClient*>(user_data);
-    self->OnTestStringChanged(param != nullptr ? param : "");
+void TrainingClient::OnRemoteTestStringChanged(const std::string& param) {
+    OnTestStringChanged(param);
 }
 
-void TrainingClient::OnRemoteTestInfoChanged(void* user_data, const public_api::TestInfo* param) {
+void TrainingClient::OnRemoteTestInfoChanged(const public_api::TestInfo& param) {
+    OnTestInfoChanged(param);
+}
+
+/* ---------------------------------------
+ *       信号转发(实际调用self下方法)
+ * --------------------------------------- */
+void TrainingClient::DispatchRemoteTestBoolChanged(void* user_data, bool param) {
     auto* self = static_cast<TrainingClient*>(user_data);
-    self->OnTestInfoChanged(param != nullptr ? *param : public_api::TestInfo{});
+    self->OnRemoteTestBoolChanged(param);
+}
+
+void TrainingClient::DispatchRemoteTestIntChanged(void* user_data, int param) {
+    auto* self = static_cast<TrainingClient*>(user_data);
+    self->OnRemoteTestIntChanged(param);
+}
+
+void TrainingClient::DispatchRemoteTestDoubleChanged(void* user_data, double param) {
+    auto* self = static_cast<TrainingClient*>(user_data);
+    self->OnRemoteTestDoubleChanged(param);
+}
+
+void TrainingClient::DispatchRemoteTestStringChanged(void* user_data, const char* param) {
+    auto* self = static_cast<TrainingClient*>(user_data);
+    self->OnRemoteTestStringChanged(param != nullptr ? param : "");
+}
+
+void TrainingClient::DispatchRemoteTestInfoChanged(void* user_data, const public_api::TestInfo* param) {
+    auto* self = static_cast<TrainingClient*>(user_data);
+    self->OnRemoteTestInfoChanged(param != nullptr ? *param : public_api::TestInfo{});
 }
 
 TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
@@ -277,11 +300,11 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
 void TrainingClient::RegisterListener() {
     TrainingListenerCallbacks callbacks{};
     callbacks.user_data = this;
-    callbacks.on_test_bool_changed = &TrainingClient::OnRemoteTestBoolChanged;
-    callbacks.on_test_int_changed = &TrainingClient::OnRemoteTestIntChanged;
-    callbacks.on_test_double_changed = &TrainingClient::OnRemoteTestDoubleChanged;
-    callbacks.on_test_string_changed = &TrainingClient::OnRemoteTestStringChanged;
-    callbacks.on_test_info_changed = &TrainingClient::OnRemoteTestInfoChanged;
+    callbacks.on_test_bool_changed = &TrainingClient::DispatchRemoteTestBoolChanged;
+    callbacks.on_test_int_changed = &TrainingClient::DispatchRemoteTestIntChanged;
+    callbacks.on_test_double_changed = &TrainingClient::DispatchRemoteTestDoubleChanged;
+    callbacks.on_test_string_changed = &TrainingClient::DispatchRemoteTestStringChanged;
+    callbacks.on_test_info_changed = &TrainingClient::DispatchRemoteTestInfoChanged;
     api_.set_listener(handle_, &callbacks);
 }
 

@@ -254,7 +254,10 @@ gboolean TrainingService::OnHandleSendFileChunk(Training* object,
                                            md5_hex != nullptr ? md5_hex : "",
                                            shm_name != nullptr ? shm_name : "");
     } catch (...) {
-        self->ResetFileTransfer(true);
+        // 失败删除旧文件
+        self->ResetFileTransfer((sender != nullptr ? sender : "") + std::string("|") +
+                                    (transfer_id != nullptr ? transfer_id : ""),
+                                true);
         ok = false;
     }
     training_complete_send_file_chunk(object, invocation, ok);
@@ -278,48 +281,55 @@ bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
     if (chunk_count == 0 || chunk_size > utils::kFileChunkSize) {
         return false;
     }
-    
-    if (!file_transfer_.active) {
-        if (chunk_index != 0) {
+    // sender|id 组合确定传输唯一性
+    const std::string transfer_key = sender + "|" + transfer_id;
+
+    {
+        std::lock_guard<std::mutex> lock(file_transfer_mutex_);
+        // 检查是否为第一次连接
+        if (file_transfers_.find(transfer_key) == file_transfers_.end()) {
+            // 检查发送的切片是否为的一个
+            if (chunk_index != 0) {
+                return false;
+            }
+            // 准备元数据到transfer_key下
+            if (!PrepareTransferState(transfer_key, sender, transfer_id, file_name, total_size, chunk_count, md5_hex)) {
+                return false;
+            }
+        }
+    }
+
+    FileTransferState transfer_state{};
+    {
+        std::lock_guard<std::mutex> lock(file_transfer_mutex_);
+        // 检查是否有准备的元数据
+        auto it = file_transfers_.find(transfer_key);
+        if (it == file_transfers_.end()) {
             return false;
         }
-
-        file_transfer_.active = true;
-        file_transfer_.owner_sender = sender;
-        file_transfer_.transfer_id = transfer_id;
-        file_transfer_.file_name = file_name;
-        file_transfer_.total_size = total_size;
-        file_transfer_.chunk_count = chunk_count; // 切片总数
-        file_transfer_.next_expected_chunk = 0;
-        file_transfer_.received_size = 0;
-        file_transfer_.expected_md5 = md5_hex;
-        file_transfer_.temp_file_path = utils::GetExecutableDir() / ("." + transfer_id + ".part");
-        std::filesystem::remove(file_transfer_.temp_file_path); // 直接删除已经存在的文件(覆盖)
-    } else if (file_transfer_.owner_sender != sender) {
-        // 只允许一个活跃传输，后来者直接拒绝
-        return false;
+        transfer_state = it->second;
     }
 
     // 发送中断(sender一致但是数据对不上)
-    if (file_transfer_.transfer_id != transfer_id ||
-        file_transfer_.file_name != file_name ||
-        file_transfer_.total_size != total_size ||
-        file_transfer_.chunk_count != chunk_count ||
-        file_transfer_.expected_md5 != md5_hex) {
-        // 删除旧文件
-        ResetFileTransfer(true);
+    if (transfer_state.owner_sender != sender ||
+        transfer_state.transfer_id != transfer_id ||
+        transfer_state.file_name != file_name ||
+        transfer_state.total_size != total_size ||
+        transfer_state.chunk_count != chunk_count ||
+        transfer_state.expected_md5 != md5_hex) {
+        ResetFileTransfer(transfer_key, true);
         return false;
     }
 
     // 校验下一段数据标号
-    if (chunk_index != file_transfer_.next_expected_chunk) {
-        ResetFileTransfer(true);
+    if (chunk_index != transfer_state.next_expected_chunk) {
+        ResetFileTransfer(transfer_key, true);
         return false;
     }
 
     // 校验总大小
-    if (file_transfer_.received_size + chunk_size > file_transfer_.total_size) {
-        ResetFileTransfer(true);
+    if (transfer_state.received_size + chunk_size > transfer_state.total_size) {
+        ResetFileTransfer(transfer_key, true);
         return false;
     }
 
@@ -330,36 +340,44 @@ bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
         auto mapped = utils::MapSharedMemory(shm_fd.Get(), utils::kFileChunkSize, PROT_READ);
 
         // 打开.part文件
-        std::ofstream output(file_transfer_.temp_file_path, std::ios::binary | std::ios::app);
+        std::ofstream output(transfer_state.temp_file_path, std::ios::binary | std::ios::app);
         if (!output.is_open()) {
-            ResetFileTransfer(true);
+            ResetFileTransfer(transfer_key, true);
             return false;
         }
         // 读取chunk_size长度的内存数据追加到.part文件
         output.write(static_cast<const char*>(mapped.Get()), static_cast<std::streamsize>(chunk_size));
         if (!output.good()) {
-            ResetFileTransfer(true);
+            ResetFileTransfer(transfer_key, true);
             return false;
         }
     } catch (...) {
-        ResetFileTransfer(true);
+        ResetFileTransfer(transfer_key, true);
         return false;
     }
 
-    // 更新接受的数据
-    file_transfer_.received_size += chunk_size;
-    // 更新下一判断标号
-    file_transfer_.next_expected_chunk += 1;
+    {
+        std::lock_guard<std::mutex> lock(file_transfer_mutex_);
+        auto it = file_transfers_.find(transfer_key);
+        if (it == file_transfers_.end()) {
+            return false;
+        }
+        // 更新接受的数据
+        it->second.received_size += chunk_size;
+        // 更新下一判断标号
+        it->second.next_expected_chunk += 1;
+        transfer_state = it->second;
+    }
 
     // 最后一包到达
     if (chunk_index + 1 == chunk_count) {
         try {
             // 校验和重命名 (test.txt.part->text.txt)
-            const bool finalized = FinalizeFileTransfer();
-            ResetFileTransfer(!finalized);
+            const bool finalized = FinalizeFileTransfer(transfer_key);
+            ResetFileTransfer(transfer_key, !finalized);
             return finalized;
         } catch (...) {
-            ResetFileTransfer(true);
+            ResetFileTransfer(transfer_key, true);
             return false;
         }
     }
@@ -367,31 +385,93 @@ bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
     return true;
 }
 
-bool TrainingService::FinalizeFileTransfer() {
+bool TrainingService::FinalizeFileTransfer(const std::string& transfer_key) {
+    FileTransferState transfer_state{};
+    {
+        std::lock_guard<std::mutex> lock(file_transfer_mutex_);
+        auto transfer_it = file_transfers_.find(transfer_key);
+        if (transfer_it == file_transfers_.end()) {
+            return false;
+        }
+        // 获取传输元数据
+        transfer_state = transfer_it->second;
+    }
+
     // 校验接收数据总量大小
-    if (file_transfer_.received_size != file_transfer_.total_size) {
+    if (transfer_state.received_size != transfer_state.total_size) {
         return false;
     }
 
     // 使用工具完成MD5校验
-    const std::string actual_md5 = utils::ComputeMd5(file_transfer_.temp_file_path);
-    if (actual_md5 != file_transfer_.expected_md5) {
+    const std::string actual_md5 = utils::ComputeMd5(transfer_state.temp_file_path);
+    if (actual_md5 != transfer_state.expected_md5) {
         return false;
     }
 
     // 获取可执行文件根目录路径
-    const auto target_path = utils::GetExecutableDir() / file_transfer_.file_name;
+    const auto target_path = utils::GetExecutableDir() / transfer_state.file_name;
     std::filesystem::remove(target_path);
-    std::filesystem::rename(file_transfer_.temp_file_path, target_path);
+    std::filesystem::rename(transfer_state.temp_file_path, target_path);
     return true;
 }
 
 // 删除旧文件并重置状态
-void TrainingService::ResetFileTransfer(bool remove_temp_file) {
-    if (remove_temp_file && !file_transfer_.temp_file_path.empty()) {
-        std::filesystem::remove(file_transfer_.temp_file_path);
+void TrainingService::ResetFileTransfer(const std::string& transfer_key, bool remove_temp_file) {
+    FileTransferState transfer_state{};
+    {
+        std::lock_guard<std::mutex> lock(file_transfer_mutex_);
+        auto transfer_it = file_transfers_.find(transfer_key);
+        if (transfer_it == file_transfers_.end()) {
+            return;
+        }
+        transfer_state = transfer_it->second;
+        // 移除连接
+        file_transfers_.erase(transfer_it);
+
+        auto claim_it = file_name_claims_.find(transfer_state.file_name);
+        if (claim_it != file_name_claims_.end() && claim_it->second == transfer_key) {
+            // 移除元数据
+            file_name_claims_.erase(claim_it);
+        }
     }
-    file_transfer_ = FileTransferState{};
+
+    // 根据remove_temp_file判断是否删除旧的临时(.part)文件
+    if (remove_temp_file && !transfer_state.temp_file_path.empty()) {
+        std::filesystem::remove(transfer_state.temp_file_path);
+    }
+}
+
+bool TrainingService::PrepareTransferState(const std::string& transfer_key,
+                                           const std::string& sender,
+                                           const std::string& transfer_id,
+                                           const std::string& file_name,
+                                           std::uint64_t total_size,
+                                           std::uint32_t chunk_count,
+                                           const std::string& md5_hex) {
+    // 同名文件已存在活跃发送：直接拒绝后者
+    if (file_name_claims_.find(file_name) != file_name_claims_.end()) {
+        return false;
+    }
+    // 为当前文件元数据和transfer_key关联
+    file_name_claims_[file_name] = transfer_key;
+
+    FileTransferState state{};
+    state.owner_sender = sender;        // 连接唯一ID
+    state.transfer_id = transfer_id;    // 发送批次
+    state.transfer_key = transfer_key;  // 组合的key(sender|transfer_id)
+    state.file_name = file_name;        // 发送的文件名
+    state.total_size = total_size;      // 文件总大小
+    state.chunk_count = chunk_count;    // 切片总数
+    state.next_expected_chunk = 0;      // 以一个预期切片id
+    state.received_size = 0;            // 已接收字大小
+    state.expected_md5 = md5_hex;       // 预期MD5
+    // 临时文件名 ‘.id.part’
+    state.temp_file_path = utils::GetExecutableDir() / ("." + transfer_id + ".part");
+    // 删除同名文件(覆写)
+    std::filesystem::remove(state.temp_file_path);
+    // 同步文件元信息到transfer_key下
+    file_transfers_[transfer_key] = std::move(state);
+    return true;
 }
 
 } // namespace training::service

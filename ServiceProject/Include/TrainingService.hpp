@@ -9,7 +9,9 @@
 #include "training-generated.h"
 
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace training::service {
 
@@ -85,10 +87,10 @@ private:
                                           const gchar* shm_name,
                                           gpointer user_data);
 
-    struct FileTransferState {
-        bool active = false;
+    struct FileTransferState {  // 元数据
         std::string owner_sender{};
         std::string transfer_id{};
+        std::string transfer_key{}; // 唯一连接标志
         std::string file_name{};
         std::uint64_t total_size = 0;
         std::uint32_t chunk_count = 0;
@@ -106,16 +108,25 @@ private:
                                  std::uint32_t chunk_count,
                                  std::uint32_t chunk_size,
                                  const std::string& md5_hex,
-                                 const std::string& shm_name);
-    void ResetFileTransfer(bool remove_temp_file);
-    bool FinalizeFileTransfer();
+                                  const std::string& shm_name);
+    void ResetFileTransfer(const std::string& transfer_key, bool remove_temp_file);
+    bool FinalizeFileTransfer(const std::string& transfer_key);
+    bool PrepareTransferState(const std::string& transfer_key,
+                              const std::string& sender,
+                              const std::string& transfer_id,
+                              const std::string& file_name,
+                              std::uint64_t total_size,
+                              std::uint32_t chunk_count,
+                              const std::string& md5_hex);
 
     utils::UniqueMainLoop loop_;
     utils::ScopedBusConnection connection_;
     utils::ScopedBusNameOwner bus_name_owner_;
     utils::UniqueGObject<Training> skeleton_;
     public_api::TestInfo state_{false, 0, 0.0, {}}; // service 端唯一状态
-    FileTransferState file_transfer_{};
+    std::mutex file_transfer_mutex_;
+    std::unordered_map<std::string, FileTransferState> file_transfers_{};
+    std::unordered_map<std::string, std::string> file_name_claims_{};
 };
 
 } // namespace training::service

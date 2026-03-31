@@ -59,12 +59,21 @@ public:
     void OnTestStringChanged(std::string param) override;
     void OnTestInfoChanged(public_api::TestInfo param) override;
 
+protected:
+    // 远端广播到达后的可重写入口，便于后续 UI 子类接管
+    virtual void OnRemoteTestBoolChanged(bool param);
+    virtual void OnRemoteTestIntChanged(int param);
+    virtual void OnRemoteTestDoubleChanged(double param);
+    virtual void OnRemoteTestStringChanged(const std::string& param);
+    virtual void OnRemoteTestInfoChanged(const public_api::TestInfo& param);
+
 private:
-    static void OnRemoteTestBoolChanged(void* user_data, bool param);
-    static void OnRemoteTestIntChanged(void* user_data, int param);
-    static void OnRemoteTestDoubleChanged(void* user_data, double param);
-    static void OnRemoteTestStringChanged(void* user_data, const char* param);
-    static void OnRemoteTestInfoChanged(void* user_data, const public_api::TestInfo* param);
+    // 静态函数只负责把 C 风格回调转发到具体对象
+    static void DispatchRemoteTestBoolChanged(void* user_data, bool param);
+    static void DispatchRemoteTestIntChanged(void* user_data, int param);
+    static void DispatchRemoteTestDoubleChanged(void* user_data, double param);
+    static void DispatchRemoteTestStringChanged(void* user_data, const char* param);
+    static void DispatchRemoteTestInfoChanged(void* user_data, const public_api::TestInfo* param);
 
     static Api LoadApi(void* library_handle);
     void RegisterListener();
