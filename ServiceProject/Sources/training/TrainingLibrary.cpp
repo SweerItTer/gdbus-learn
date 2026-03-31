@@ -19,6 +19,14 @@ void ClearLastError() {
     g_last_error.clear();
 }
 
+void DrainPendingSignals() {
+    for (int i = 0; i < 8; ++i) {
+        if (!g_main_context_iteration(nullptr, FALSE)) {
+            break;
+        }
+    }
+}
+
 public_api::TestInfo VariantToTestInfo(GVariant* value) {
     public_api::TestInfo info{};
     gboolean bool_param = FALSE;
@@ -137,6 +145,7 @@ bool TrainingLibraryClient::SetTestBool(bool param) {
                                                     error);
         },
         "failed to call SetTestBool: ");
+    detail::DrainPendingSignals();
     return static_cast<bool>(result);
 }
 
@@ -151,6 +160,7 @@ bool TrainingLibraryClient::SetTestInt(int param) {
                                                    error);
         },
         "failed to call SetTestInt: ");
+    detail::DrainPendingSignals();
     return static_cast<bool>(result);
 }
 
@@ -165,6 +175,7 @@ bool TrainingLibraryClient::SetTestDouble(double param) {
                                                       error);
         },
         "failed to call SetTestDouble: ");
+    detail::DrainPendingSignals();
     return static_cast<bool>(result);
 }
 
@@ -179,6 +190,7 @@ bool TrainingLibraryClient::SetTestString(const char* param) {
                                                       error);
         },
         "failed to call SetTestString: ");
+    detail::DrainPendingSignals();
     return static_cast<bool>(result);
 }
 
@@ -194,6 +206,7 @@ bool TrainingLibraryClient::SetTestInfo(const TrainingInfoView* param) {
                                                     error);
         },
         "failed to call SetTestInfo: ");
+    detail::DrainPendingSignals();
     return static_cast<bool>(result);
 }
 

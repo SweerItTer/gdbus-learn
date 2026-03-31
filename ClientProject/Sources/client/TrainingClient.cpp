@@ -2,6 +2,7 @@
 
 #include <dlfcn.h>
 
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -134,22 +135,31 @@ public_api::TestInfo TrainingClient::GetTestInfo() {
 
 void TrainingClient::OnTestBoolChanged(bool param) {
     cached_info_.bool_param = param;
+    std::cout << "[Listener] OnTestBoolChanged: " << std::boolalpha << param << std::noboolalpha << std::endl;
 }
 
 void TrainingClient::OnTestIntChanged(int param) {
     cached_info_.int_param = param;
+    std::cout << "[Listener] OnTestIntChanged: " << param << std::endl;
 }
 
 void TrainingClient::OnTestDoubleChanged(double param) {
     cached_info_.double_param = param;
+    std::cout << "[Listener] OnTestDoubleChanged: " << param << std::endl;
 }
 
 void TrainingClient::OnTestStringChanged(std::string param) {
     cached_info_.string_param = std::move(param);
+    std::cout << "[Listener] OnTestStringChanged: " << cached_info_.string_param << std::endl;
 }
 
 void TrainingClient::OnTestInfoChanged(public_api::TestInfo param) {
     cached_info_ = std::move(param);
+    std::cout << "[Listener] OnTestInfoChanged: { bool=" << std::boolalpha << cached_info_.bool_param
+              << ", int=" << cached_info_.int_param
+              << ", double=" << cached_info_.double_param
+              << ", string=\"" << cached_info_.string_param << "\" }"
+              << std::noboolalpha << std::endl;
 }
 
 void TrainingClient::OnRemoteTestBoolChanged(void* user_data, bool param) {
