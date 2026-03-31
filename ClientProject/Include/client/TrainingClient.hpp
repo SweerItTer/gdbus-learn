@@ -4,8 +4,13 @@
 #include <public/ITestService.hpp>
 #include <public/TrainingLibraryApi.hpp>
 
+#include <atomic>
+#include <mutex>
+#include <thread>
+
 namespace training::client {
 
+// 重写方法(调用动态库方法，绕过proxy创建)
 class TrainingClient : public public_api::ITestService, public public_api::ITestListener {
 public:
     struct Api {
@@ -23,6 +28,7 @@ public:
         TrainingGetTestStringFn get_test_string{nullptr};
         TrainingGetTestInfoFn get_test_info{nullptr};
         TrainingGetLastErrorFn get_last_error{nullptr};
+        TrainingPumpEventsFn pump_events{nullptr};
     };
 
     TrainingClient();
@@ -42,6 +48,7 @@ public:
     double GetTestDouble() override;
     std::string GeTestString() override;
     public_api::TestInfo GetTestInfo() override;
+    bool SendFile(unsigned char* file_buf, size_t file_size) override;
 
     void OnTestBoolChanged(bool param) override;
     void OnTestIntChanged(int param) override;
@@ -54,18 +61,21 @@ private:
     static void OnRemoteTestIntChanged(void* user_data, int param);
     static void OnRemoteTestDoubleChanged(void* user_data, double param);
     static void OnRemoteTestStringChanged(void* user_data, const char* param);
-    static void OnRemoteTestInfoChanged(void* user_data, const TrainingInfoView* param);
+    static void OnRemoteTestInfoChanged(void* user_data, const public_api::TestInfo* param);
 
     static Api LoadApi(void* library_handle);
     void RegisterListener();
+    void StartEventPump();
+    void StopEventPump();
     [[noreturn]] void ThrowLastError(const char* operation) const;
-    static public_api::TestInfo ToTestInfo(const TrainingInfoView& info);
-    static TrainingInfoView ToInfoView(const public_api::TestInfo& info);
 
     void* library_handle_{nullptr};
     Api api_{};
     TrainingLibraryHandle* handle_{nullptr};
     public_api::TestInfo cached_info_{};
+    std::recursive_mutex api_mutex_;
+    std::atomic<bool> stop_event_pump_{false};
+    std::thread event_pump_thread_;
 };
 
 } // namespace training::client

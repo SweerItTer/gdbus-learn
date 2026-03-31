@@ -1,6 +1,7 @@
-#include <training/TrainingLibrary.hpp>
+#include <TrainingLibrary.hpp>
 
 #include <public/DbusConstants.hpp>
+#include <utils/ContractSerializer.hpp>
 
 #include <stdexcept>
 #include <string>
@@ -27,43 +28,6 @@ void DrainPendingSignals() {
     }
 }
 
-public_api::TestInfo VariantToTestInfo(GVariant* value) {
-    public_api::TestInfo info{};
-    gboolean bool_param = FALSE;
-    gint int_param = 0;
-    gdouble double_param = 0.0;
-    const gchar* string_param = "";
-
-    g_variant_get(value, "(bids)", &bool_param, &int_param, &double_param, &string_param);
-
-    info.bool_param = static_cast<bool>(bool_param);
-    info.int_param = int_param;
-    info.double_param = double_param;
-    info.string_param = string_param != nullptr ? string_param : "";
-    return info;
-}
-
-GVariant* TestInfoToVariant(const public_api::TestInfo& info) {
-    return g_variant_new("(bids)",
-                         static_cast<gboolean>(info.bool_param),
-                         static_cast<gint>(info.int_param),
-                         static_cast<gdouble>(info.double_param),
-                         info.string_param.c_str());
-}
-
-public_api::TestInfo ViewToTestInfo(const TrainingInfoView* view) {
-    public_api::TestInfo info{};
-    if (view == nullptr) {
-        return info;
-    }
-
-    info.bool_param = view->bool_param;
-    info.int_param = view->int_param;
-    info.double_param = view->double_param;
-    info.string_param = view->string_param != nullptr ? view->string_param : "";
-    return info;
-}
-
 template <typename Fn>
 bool InvokeWithError(Fn&& fn) {
     try {
@@ -79,6 +43,7 @@ bool InvokeWithError(Fn&& fn) {
     }
 }
 
+// 带错误输出的函数调用
 template <typename Fn>
 auto CallWithError(Fn&& fn, const char* message) {
     GError* raw_error = nullptr;
@@ -95,6 +60,7 @@ auto CallWithError(Fn&& fn, const char* message) {
 } // namespace detail
 
 TrainingLibraryClient::TrainingLibraryClient() {
+    // 创建 proxy 对象
     proxy_.reset(detail::CallWithError(
         [&](GError** error) {
             return training_proxy_new_for_bus_sync(G_BUS_TYPE_SESSION,
@@ -106,6 +72,7 @@ TrainingLibraryClient::TrainingLibraryClient() {
         },
         "failed to create Training proxy: "));
 
+    // 连接到广播信号
     g_signal_connect(proxy_.get(),
                      "on-test-bool-changed",
                      G_CALLBACK(&TrainingLibraryClient::OnRemoteTestBoolChanged),
@@ -127,13 +94,16 @@ TrainingLibraryClient::TrainingLibraryClient() {
                      G_CALLBACK(&TrainingLibraryClient::OnRemoteTestInfoChanged),
                      this);
 
-    UpdateInfoView();
 }
 
 void TrainingLibraryClient::SetListener(const TrainingListenerCallbacks* callbacks) {
-    listener_ = callbacks != nullptr ? *callbacks : TrainingListenerCallbacks{};
+    std::lock_guard<std::mutex> lock(mutex_);
+    listener_ = (callbacks != nullptr) ? *callbacks : TrainingListenerCallbacks{};
 }
 
+/* ---------------------------------------
+ *        method set调用(区分带返回值)   
+ * --------------------------------------- */
 bool TrainingLibraryClient::SetTestBool(bool param) {
     gboolean result = FALSE;
     detail::CallWithError(
@@ -194,13 +164,13 @@ bool TrainingLibraryClient::SetTestString(const char* param) {
     return static_cast<bool>(result);
 }
 
-bool TrainingLibraryClient::SetTestInfo(const TrainingInfoView* param) {
+bool TrainingLibraryClient::SetTestInfo(const public_api::TestInfo* param) {
     gboolean result = FALSE;
-    const auto info = detail::ViewToTestInfo(param);
+    const auto info = param != nullptr ? *param : public_api::TestInfo{};
     detail::CallWithError(
         [&](GError** error) {
             return training_call_set_test_info_sync(proxy_.get(),
-                                                    detail::TestInfoToVariant(info),
+                                                    utils::TestInfoToVariant(info),
                                                     &result,
                                                     nullptr,
                                                     error);
@@ -210,6 +180,9 @@ bool TrainingLibraryClient::SetTestInfo(const TrainingInfoView* param) {
     return static_cast<bool>(result);
 }
 
+/* ---------------------------------------
+ *       method get调用(区分带返回值)     
+ * --------------------------------------- */
 bool TrainingLibraryClient::GetTestBool(bool* result) {
     gboolean value = FALSE;
     detail::CallWithError(
@@ -276,7 +249,7 @@ bool TrainingLibraryClient::GetTestString(const char** result) {
     return true;
 }
 
-bool TrainingLibraryClient::GetTestInfo(TrainingInfoView* result) {
+bool TrainingLibraryClient::GetTestInfo(public_api::TestInfo* result) {
     GVariant* raw_result = nullptr;
     detail::CallWithError(
         [&](GError** error) {
@@ -287,94 +260,106 @@ bool TrainingLibraryClient::GetTestInfo(TrainingInfoView* result) {
         },
         "failed to call GetTestInfo: ");
     utils::UniqueGVariant value(raw_result);
-    cached_info_ = detail::VariantToTestInfo(value.get());
-    UpdateInfoView();
+    cached_info_ = utils::VariantToTestInfo(value.get());
     if (result != nullptr) {
-        *result = cached_info_view_;
+        *result = cached_info_;
     }
     return true;
 }
 
-void TrainingLibraryClient::NotifyTestBoolChanged(bool param) {
-    cached_info_.bool_param = param;
-    UpdateInfoView();
-    if (listener_.on_test_bool_changed != nullptr) {
-        listener_.on_test_bool_changed(listener_.user_data, param);
-    }
+void TrainingLibraryClient::PumpEvents() {
+    detail::DrainPendingSignals();
 }
-
-void TrainingLibraryClient::NotifyTestIntChanged(int param) {
-    cached_info_.int_param = param;
-    UpdateInfoView();
-    if (listener_.on_test_int_changed != nullptr) {
-        listener_.on_test_int_changed(listener_.user_data, param);
-    }
-}
-
-void TrainingLibraryClient::NotifyTestDoubleChanged(double param) {
-    cached_info_.double_param = param;
-    UpdateInfoView();
-    if (listener_.on_test_double_changed != nullptr) {
-        listener_.on_test_double_changed(listener_.user_data, param);
-    }
-}
-
-void TrainingLibraryClient::NotifyTestStringChanged(const std::string& param) {
-    cached_info_.string_param = param;
-    UpdateInfoView();
-    if (listener_.on_test_string_changed != nullptr) {
-        listener_.on_test_string_changed(listener_.user_data, cached_info_.string_param.c_str());
-    }
-}
-
-void TrainingLibraryClient::NotifyTestInfoChanged(const public_api::TestInfo& param) {
-    cached_info_ = param;
-    UpdateInfoView();
-    if (listener_.on_test_info_changed != nullptr) {
-        listener_.on_test_info_changed(listener_.user_data, &cached_info_view_);
-    }
-}
-
-void TrainingLibraryClient::UpdateInfoView() {
-    cached_info_view_.bool_param = cached_info_.bool_param;
-    cached_info_view_.int_param = cached_info_.int_param;
-    cached_info_view_.double_param = cached_info_.double_param;
-    cached_info_view_.string_param = cached_info_.string_param.c_str();
-}
-
+/* ---------------------------------------
+ *        信号接收具体操作实现(槽函数)  
+ * --------------------------------------- */
+/* ---------------------------------------
+ *                信号转发  
+ * --------------------------------------- */
 void TrainingLibraryClient::OnRemoteTestBoolChanged(Training*, gboolean param, gpointer user_data) {
     auto* self = static_cast<TrainingLibraryClient*>(user_data);
-    self->NotifyTestBoolChanged(static_cast<bool>(param));
+    TrainingListenerCallbacks callbacks{};
+    const bool value = static_cast<bool>(param);
+    {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->cached_info_.bool_param = value;
+        callbacks = self->listener_;
+    }
+    if (callbacks.on_test_bool_changed != nullptr) {
+        callbacks.on_test_bool_changed(callbacks.user_data, value);
+    }
 }
 
 void TrainingLibraryClient::OnRemoteTestIntChanged(Training*, gint param, gpointer user_data) {
     auto* self = static_cast<TrainingLibraryClient*>(user_data);
-    self->NotifyTestIntChanged(static_cast<int>(param));
+    TrainingListenerCallbacks callbacks{};
+    const int value = static_cast<int>(param);
+    {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->cached_info_.int_param = value;
+        callbacks = self->listener_;
+    }
+    if (callbacks.on_test_int_changed != nullptr) {
+        callbacks.on_test_int_changed(callbacks.user_data, value);
+    }
 }
 
 void TrainingLibraryClient::OnRemoteTestDoubleChanged(Training*, gdouble param, gpointer user_data) {
     auto* self = static_cast<TrainingLibraryClient*>(user_data);
-    self->NotifyTestDoubleChanged(static_cast<double>(param));
+    TrainingListenerCallbacks callbacks{};
+    const double value = static_cast<double>(param);
+    {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->cached_info_.double_param = value;
+        callbacks = self->listener_;
+    }
+    if (callbacks.on_test_double_changed != nullptr) {
+        callbacks.on_test_double_changed(callbacks.user_data, value);
+    }
 }
 
 void TrainingLibraryClient::OnRemoteTestStringChanged(Training*, const gchar* param, gpointer user_data) {
     auto* self = static_cast<TrainingLibraryClient*>(user_data);
-    self->NotifyTestStringChanged(param != nullptr ? param : "");
+    TrainingListenerCallbacks callbacks{};
+    const std::string value = param != nullptr ? param : "";
+    {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->cached_info_.string_param = value;
+        callbacks = self->listener_;
+    }
+    if (callbacks.on_test_string_changed != nullptr) {
+        callbacks.on_test_string_changed(callbacks.user_data, value.c_str());
+    }
 }
 
 void TrainingLibraryClient::OnRemoteTestInfoChanged(Training*, GVariant* param, gpointer user_data) {
     auto* self = static_cast<TrainingLibraryClient*>(user_data);
-    self->NotifyTestInfoChanged(detail::VariantToTestInfo(param));
+    TrainingListenerCallbacks callbacks{};
+    const public_api::TestInfo value = utils::VariantToTestInfo(param);
+    {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        self->cached_info_ = value;
+        callbacks = self->listener_;
+    }
+    if (callbacks.on_test_info_changed != nullptr) {
+        callbacks.on_test_info_changed(callbacks.user_data, &value);
+    }
 }
 
 } // namespace training::library
 
+
+/* ---------------------------------------
+ *                C API 实现   
+ * --------------------------------------- */
 struct TrainingLibraryHandle {
+    // new结构体是自动实例化 TrainingLibraryClient
     training::library::TrainingLibraryClient client;
 };
 
 extern "C" TrainingLibraryHandle* Training_Create() {
     TrainingLibraryHandle* handle = nullptr;
+    // 实例化结构体
     training::library::detail::InvokeWithError([&]() {
         handle = new TrainingLibraryHandle{};
     });
@@ -382,6 +367,7 @@ extern "C" TrainingLibraryHandle* Training_Create() {
 }
 
 extern "C" void Training_Destroy(TrainingLibraryHandle* handle) {
+    // 析构结构体(自动析构TrainingLibraryClient)
     delete handle;
 }
 
@@ -437,7 +423,7 @@ extern "C" bool Training_SetTestString(TrainingLibraryHandle* handle, const char
     });
 }
 
-extern "C" bool Training_SetTestInfo(TrainingLibraryHandle* handle, const TrainingInfoView* param) {
+extern "C" bool Training_SetTestInfo(TrainingLibraryHandle* handle, const training::public_api::TestInfo* param) {
     if (handle == nullptr) {
         return false;
     }
@@ -484,7 +470,7 @@ extern "C" bool Training_GetTestString(TrainingLibraryHandle* handle, const char
     });
 }
 
-extern "C" bool Training_GetTestInfo(TrainingLibraryHandle* handle, TrainingInfoView* result) {
+extern "C" bool Training_GetTestInfo(TrainingLibraryHandle* handle, training::public_api::TestInfo* result) {
     if (handle == nullptr) {
         return false;
     }
@@ -495,4 +481,13 @@ extern "C" bool Training_GetTestInfo(TrainingLibraryHandle* handle, TrainingInfo
 
 extern "C" const char* Training_GetLastError() {
     return training::library::detail::g_last_error.c_str();
+}
+
+extern "C" void Training_PumpEvents(TrainingLibraryHandle* handle) {
+    if (handle == nullptr) {
+        return;
+    }
+    training::library::detail::InvokeWithError([&]() {
+        handle->client.PumpEvents();
+    });
 }

@@ -6,10 +6,12 @@
 
 #include "training-generated.h"
 
+#include <mutex>
 #include <string>
 
 namespace training::library {
 
+// 包含创建proxy、注册槽函数、调用method、槽函数转发和实现
 class TrainingLibraryClient {
 public:
     TrainingLibraryClient();
@@ -20,13 +22,14 @@ public:
     bool SetTestInt(int param);
     bool SetTestDouble(double param);
     bool SetTestString(const char* param);
-    bool SetTestInfo(const TrainingInfoView* param);
+    bool SetTestInfo(const public_api::TestInfo* param);
 
     bool GetTestBool(bool* result);
     bool GetTestInt(int* result);
     bool GetTestDouble(double* result);
     bool GetTestString(const char** result);
-    bool GetTestInfo(TrainingInfoView* result);
+    bool GetTestInfo(public_api::TestInfo* result);
+    void PumpEvents();
 
 private:
     static void OnRemoteTestBoolChanged(Training* proxy, gboolean param, gpointer user_data);
@@ -35,19 +38,14 @@ private:
     static void OnRemoteTestStringChanged(Training* proxy, const gchar* param, gpointer user_data);
     static void OnRemoteTestInfoChanged(Training* proxy, GVariant* param, gpointer user_data);
 
-    void NotifyTestBoolChanged(bool param);
-    void NotifyTestIntChanged(int param);
-    void NotifyTestDoubleChanged(double param);
-    void NotifyTestStringChanged(const std::string& param);
-    void NotifyTestInfoChanged(const public_api::TestInfo& param);
-
-    void UpdateInfoView();
-
     utils::UniqueGObject<Training> proxy_{nullptr};
-    TrainingListenerCallbacks listener_{};
+
+    // info 本体
     public_api::TestInfo cached_info_{};
+
+    std::mutex mutex_;
+    TrainingListenerCallbacks listener_{};
     std::string last_string_result_{};
-    TrainingInfoView cached_info_view_{};
 };
 
 } // namespace training::library

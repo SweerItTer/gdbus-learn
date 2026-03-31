@@ -1,12 +1,9 @@
 #pragma once
 
-#include <TrainingState.hpp>
-
 #include <public/ITestService.hpp>
 #include <utils/GLibWrappers.hpp>
 #include <utils/ScopedBusConnection.hpp>
 #include <utils/ScopedBusNameOwner.hpp>
-#include <utils/ScopedExportedInterface.hpp>
 
 #include "training-generated.h"
 
@@ -22,6 +19,7 @@ public:
 
     void Run();
 
+    // 方法实现
     bool SetTestBool(bool param) override;
     bool SetTestInt(int param) override;
     bool SetTestDouble(double param) override;
@@ -32,8 +30,10 @@ public:
     double GetTestDouble() override;
     std::string GeTestString() override;
     public_api::TestInfo GetTestInfo() override;
+    bool SendFile(unsigned char* file_buf, size_t file_size) override;
 
 private:
+    // method调用
     static gboolean OnHandleSetTestBool(Training* object,
                                         GDBusMethodInvocation* invocation,
                                         gboolean param,
@@ -74,8 +74,7 @@ private:
     utils::ScopedBusConnection connection_;
     utils::ScopedBusNameOwner bus_name_owner_;
     utils::UniqueGObject<Training> skeleton_;
-    utils::ScopedExportedInterface exported_interface_;
-    TrainingState state_;
+    public_api::TestInfo state_{false, 0, 0.0, {}}; // service 端唯一状态
 };
 
 } // namespace training::service

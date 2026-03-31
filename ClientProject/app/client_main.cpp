@@ -32,7 +32,7 @@ bool ReadBool(const char* prompt) {
     int value = 0;
     std::cout << prompt << " (0/1): ";
     std::cin >> value;
-    return value != 0;
+    return value != 0; // 非零均为true
 }
 
 std::string ReadLine(const char* prompt) {
@@ -43,11 +43,11 @@ std::string ReadLine(const char* prompt) {
 }
 
 void PrintInfo(const training::public_api::TestInfo& info) {
-    std::cout << "{ bool=" << std::boolalpha << info.bool_param
+    std::cout << "{ bool=" << std::boolalpha << info.bool_param // 将布尔数据按照字符串输出“true false”
               << ", int=" << info.int_param
               << ", double=" << info.double_param
               << ", string=\"" << info.string_param << "\" }"
-              << std::noboolalpha << std::endl;
+              << std::noboolalpha << std::endl; // 关闭输出模式
 }
 
 } // namespace

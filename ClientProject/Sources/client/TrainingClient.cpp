@@ -2,6 +2,7 @@
 
 #include <dlfcn.h>
 
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,7 @@ namespace training::client {
 
 namespace {
 
+// 依据cmake生成位置宏：TRAINING_LIBRARY_PATH
 void* OpenTrainingLibrary() {
     void* handle = dlopen(TRAINING_LIBRARY_PATH, RTLD_NOW);
     if (handle == nullptr) {
@@ -20,6 +22,7 @@ void* OpenTrainingLibrary() {
     return handle;
 }
 
+// 获取到具体符号，并以具体函数类型指针返回
 template <typename Fn>
 Fn ResolveSymbol(void* library_handle, const char* symbol_name) {
     dlerror();
@@ -35,29 +38,40 @@ Fn ResolveSymbol(void* library_handle, const char* symbol_name) {
 } // namespace
 
 TrainingClient::TrainingClient() {
+    // 获取动态库句柄
     library_handle_ = OpenTrainingLibrary();
+    // 获取所有方法
     api_ = LoadApi(library_handle_);
+    // 创建
     handle_ = api_.create();
     if (handle_ == nullptr) {
         ThrowLastError("failed to create training handle: ");
     }
-
+    // 注册信号触发回调
     RegisterListener();
+    // 后台持续处理广播，避免菜单阻塞时收不到信号
+    StartEventPump();
 }
 
 TrainingClient::~TrainingClient() {
+    StopEventPump();
+    // 释放动态库下的资源
     if (handle_ != nullptr && api_.destroy != nullptr) {
         api_.destroy(handle_);
         handle_ = nullptr;
     }
-
+    // 析构动态库句柄
     if (library_handle_ != nullptr) {
         dlclose(library_handle_);
         library_handle_ = nullptr;
     }
 }
 
+/* ---------------------------------------
+ *              调用动态库方法  
+ * --------------------------------------- */
 bool TrainingClient::SetTestBool(bool param) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     if (!api_.set_test_bool(handle_, param)) {
         ThrowLastError("failed to call Training_SetTestBool: ");
     }
@@ -65,6 +79,7 @@ bool TrainingClient::SetTestBool(bool param) {
 }
 
 bool TrainingClient::SetTestInt(int param) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     if (!api_.set_test_int(handle_, param)) {
         ThrowLastError("failed to call Training_SetTestInt: ");
     }
@@ -72,6 +87,7 @@ bool TrainingClient::SetTestInt(int param) {
 }
 
 bool TrainingClient::SetTestDouble(double param) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     if (!api_.set_test_double(handle_, param)) {
         ThrowLastError("failed to call Training_SetTestDouble: ");
     }
@@ -79,6 +95,7 @@ bool TrainingClient::SetTestDouble(double param) {
 }
 
 bool TrainingClient::SetTestString(std::string param) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     if (!api_.set_test_string(handle_, param.c_str())) {
         ThrowLastError("failed to call Training_SetTestString: ");
     }
@@ -86,14 +103,15 @@ bool TrainingClient::SetTestString(std::string param) {
 }
 
 bool TrainingClient::SetTestInfo(public_api::TestInfo param) {
-    const auto view = ToInfoView(param);
-    if (!api_.set_test_info(handle_, &view)) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    if (!api_.set_test_info(handle_, &param)) {
         ThrowLastError("failed to call Training_SetTestInfo: ");
     }
     return true;
 }
 
 bool TrainingClient::GetTestBool() {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     bool result = false;
     if (!api_.get_test_bool(handle_, &result)) {
         ThrowLastError("failed to call Training_GetTestBool: ");
@@ -102,6 +120,7 @@ bool TrainingClient::GetTestBool() {
 }
 
 int TrainingClient::GetTestInt() {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     int result = 0;
     if (!api_.get_test_int(handle_, &result)) {
         ThrowLastError("failed to call Training_GetTestInt: ");
@@ -110,6 +129,7 @@ int TrainingClient::GetTestInt() {
 }
 
 double TrainingClient::GetTestDouble() {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     double result = 0.0;
     if (!api_.get_test_double(handle_, &result)) {
         ThrowLastError("failed to call Training_GetTestDouble: ");
@@ -118,6 +138,7 @@ double TrainingClient::GetTestDouble() {
 }
 
 std::string TrainingClient::GeTestString() {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     const char* result = nullptr;
     if (!api_.get_test_string(handle_, &result)) {
         ThrowLastError("failed to call Training_GetTestString: ");
@@ -126,35 +147,56 @@ std::string TrainingClient::GeTestString() {
 }
 
 public_api::TestInfo TrainingClient::GetTestInfo() {
-    TrainingInfoView result{};
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    public_api::TestInfo result{};
     if (!api_.get_test_info(handle_, &result)) {
         ThrowLastError("failed to call Training_GetTestInfo: ");
     }
-    return ToTestInfo(result);
+    return result;
 }
 
+bool TrainingClient::SendFile(unsigned char* file_buf, size_t file_size) {
+    (void)file_buf;
+    (void)file_size;
+    return false;
+}
+
+/* ---------------------------------------
+ *       信号触发后回调获取最新数据  
+ * --------------------------------------- */
 void TrainingClient::OnTestBoolChanged(bool param) {
-    cached_info_.bool_param = param;
-    std::cout << "[Listener] OnTestBoolChanged: " << std::boolalpha << param << std::noboolalpha << std::endl;
+    (void)param;
+    // 信号只表示“数据发生变化”，缓存内容以最新 Get 结果为准
+    cached_info_.bool_param = GetTestBool();
+    std::cout << "[Listener] OnTestBoolChanged: " << std::boolalpha << cached_info_.bool_param << std::noboolalpha
+              << std::endl;
 }
 
 void TrainingClient::OnTestIntChanged(int param) {
-    cached_info_.int_param = param;
-    std::cout << "[Listener] OnTestIntChanged: " << param << std::endl;
+    (void)param;
+    // 信号只表示“数据发生变化”，缓存内容以最新 Get 结果为准
+    cached_info_.int_param = GetTestInt();
+    std::cout << "[Listener] OnTestIntChanged: " << cached_info_.int_param << std::endl;
 }
 
 void TrainingClient::OnTestDoubleChanged(double param) {
-    cached_info_.double_param = param;
-    std::cout << "[Listener] OnTestDoubleChanged: " << param << std::endl;
+    (void)param;
+    // 信号只表示“数据发生变化”，缓存内容以最新 Get 结果为准
+    cached_info_.double_param = GetTestDouble();
+    std::cout << "[Listener] OnTestDoubleChanged: " << cached_info_.double_param << std::endl;
 }
 
 void TrainingClient::OnTestStringChanged(std::string param) {
-    cached_info_.string_param = std::move(param);
+    (void)param;
+    // 信号只表示“数据发生变化”，缓存内容以最新 Get 结果为准
+    cached_info_.string_param = GeTestString();
     std::cout << "[Listener] OnTestStringChanged: " << cached_info_.string_param << std::endl;
 }
 
 void TrainingClient::OnTestInfoChanged(public_api::TestInfo param) {
-    cached_info_ = std::move(param);
+    (void)param;
+    // 信号只表示“数据发生变化”，缓存内容以最新 Get 结果为准
+    cached_info_ = GetTestInfo();
     std::cout << "[Listener] OnTestInfoChanged: { bool=" << std::boolalpha << cached_info_.bool_param
               << ", int=" << cached_info_.int_param
               << ", double=" << cached_info_.double_param
@@ -162,6 +204,9 @@ void TrainingClient::OnTestInfoChanged(public_api::TestInfo param) {
               << std::noboolalpha << std::endl;
 }
 
+/* ---------------------------------------
+ *       信号转发(实际调用self下方法)  
+ * --------------------------------------- */
 void TrainingClient::OnRemoteTestBoolChanged(void* user_data, bool param) {
     auto* self = static_cast<TrainingClient*>(user_data);
     self->OnTestBoolChanged(param);
@@ -182,12 +227,13 @@ void TrainingClient::OnRemoteTestStringChanged(void* user_data, const char* para
     self->OnTestStringChanged(param != nullptr ? param : "");
 }
 
-void TrainingClient::OnRemoteTestInfoChanged(void* user_data, const TrainingInfoView* param) {
+void TrainingClient::OnRemoteTestInfoChanged(void* user_data, const public_api::TestInfo* param) {
     auto* self = static_cast<TrainingClient*>(user_data);
-    self->OnTestInfoChanged(param != nullptr ? ToTestInfo(*param) : public_api::TestInfo{});
+    self->OnTestInfoChanged(param != nullptr ? *param : public_api::TestInfo{});
 }
 
 TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
+    // 缓存所有方法(函数指针)到结构体
     Api api{};
     api.create = ResolveSymbol<TrainingCreateFn>(library_handle, "Training_Create");
     api.destroy = ResolveSymbol<TrainingDestroyFn>(library_handle, "Training_Destroy");
@@ -203,6 +249,7 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
     api.get_test_string = ResolveSymbol<TrainingGetTestStringFn>(library_handle, "Training_GetTestString");
     api.get_test_info = ResolveSymbol<TrainingGetTestInfoFn>(library_handle, "Training_GetTestInfo");
     api.get_last_error = ResolveSymbol<TrainingGetLastErrorFn>(library_handle, "Training_GetLastError");
+    api.pump_events = ResolveSymbol<TrainingPumpEventsFn>(library_handle, "Training_PumpEvents");
     return api;
 }
 
@@ -211,6 +258,7 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
     throw std::runtime_error(std::string(operation) + (message != nullptr ? message : "unknown training library error"));
 }
 
+// 在此注册信号触发的回调(更新数据)
 void TrainingClient::RegisterListener() {
     TrainingListenerCallbacks callbacks{};
     callbacks.user_data = this;
@@ -222,20 +270,25 @@ void TrainingClient::RegisterListener() {
     api_.set_listener(handle_, &callbacks);
 }
 
-public_api::TestInfo TrainingClient::ToTestInfo(const TrainingInfoView& info) {
-    return public_api::TestInfo{
-        info.bool_param,
-        info.int_param,
-        info.double_param,
-        info.string_param != nullptr ? info.string_param : ""};
+void TrainingClient::StartEventPump() {
+    stop_event_pump_.store(false);
+    event_pump_thread_ = std::thread([this]() {
+        while (!stop_event_pump_.load()) {
+            {
+                std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+                if (handle_ != nullptr && api_.pump_events != nullptr) {
+                    api_.pump_events(handle_);
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    });
 }
 
-TrainingInfoView TrainingClient::ToInfoView(const public_api::TestInfo& info) {
-    return TrainingInfoView{
-        info.bool_param,
-        info.int_param,
-        info.double_param,
-        info.string_param.c_str()};
+void TrainingClient::StopEventPump() {
+    stop_event_pump_.store(true);
+    if (event_pump_thread_.joinable()) {
+        event_pump_thread_.join();
+    }
 }
-
 } // namespace training::client

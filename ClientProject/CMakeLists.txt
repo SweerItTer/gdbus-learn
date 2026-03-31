@@ -41,6 +41,15 @@ target_link_libraries(client_wrapper_smoke
 
 add_dependencies(client_wrapper_smoke training server)
 
+add_executable(training_library_api_types
+    tests/training_library_api_types.cpp
+)
+
+target_link_libraries(training_library_api_types
+    PRIVATE
+        training_common
+)
+
 add_test(
     NAME client_wrapper_roundtrip
     COMMAND

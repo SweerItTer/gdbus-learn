@@ -37,7 +37,7 @@
     <method name="GetTestString">
       <arg name="result" type="s" direction="out"/>
     </method>
-    <method name="GetTestInfo">
+    <method name="GetTestInfo">     <!-- 数据序列 -->
       <arg name="result" type="(bids)" direction="out"/>
     </method>
   <!-- 信号 -->
