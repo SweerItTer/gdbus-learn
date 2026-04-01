@@ -22,7 +22,8 @@ void* OpenTrainingLibrary() {
     return handle;
 }
 
-// 获取到具体符号，并以具体函数类型指针返回
+// 运行时按符号名解析动态库导出函数。
+// 这样 wrapper 只依赖公共头文件，不在编译期硬绑定具体实现库。
 template <typename Fn>
 Fn ResolveSymbol(void* library_handle, const char* symbol_name) {
     dlerror();
@@ -38,11 +39,9 @@ Fn ResolveSymbol(void* library_handle, const char* symbol_name) {
 } // namespace
 
 TrainingClient::TrainingClient() {
-    // 获取动态库句柄
+    // wrapper 层故意采用“运行时加载动态库”的方式，模拟真实业务侧对 training.so 的使用形态。
     library_handle_ = OpenTrainingLibrary();
-    // 获取所有方法
     api_ = LoadApi(library_handle_);
-    // 创建
     handle_ = api_.create();
     if (handle_ == nullptr) {
         ThrowLastError("failed to create training handle: ");
@@ -157,19 +156,31 @@ public_api::TestInfo TrainingClient::GetTestInfo() {
 
 bool TrainingClient::SendFile(unsigned char* file_buf, size_t file_size) {
     std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    // 旧接口没有额外的远端路径参数，因此默认把 buffer 作为 upload_buffer.bin 发送到根目录。
     if (!api_.send_file_buffer(handle_,
                                file_buf,
                                static_cast<unsigned long long>(file_size),
+                               "upload_buffer.bin",
                                "upload_buffer.bin")) {
         ThrowLastError("failed to call Training_SendFileBuffer: ");
     }
     return true;
 }
 
-bool TrainingClient::SendFileByPath(const std::string& file_path) {
+bool TrainingClient::SendFileByPath(const std::string& file_path, const std::string& remote_relative_path) {
     std::lock_guard<std::recursive_mutex> lock(api_mutex_);
-    if (!api_.send_file_path(handle_, file_path.c_str())) {
+    // remote_relative_path 允许为空，库层会自动退化成 basename。
+    if (!api_.send_file_path(handle_, file_path.c_str(), remote_relative_path.c_str())) {
         ThrowLastError("failed to call Training_SendFilePath: ");
+    }
+    return true;
+}
+
+bool TrainingClient::DownloadFile(const std::string& remote_relative_path, const std::string& local_file_path) {
+    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
+    // 下载时强制要求显式本地路径，避免 wrapper 在上层不知情的情况下挑选落盘位置。
+    if (!api_.download_file(handle_, remote_relative_path.c_str(), local_file_path.c_str())) {
+        ThrowLastError("failed to call Training_DownloadFile: ");
     }
     return true;
 }
@@ -269,7 +280,7 @@ void TrainingClient::DispatchRemoteTestInfoChanged(void* user_data, const public
 }
 
 TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
-    // 缓存所有方法(函数指针)到结构体
+    // 所有符号在构造时一次性解析，失败则尽早暴露，避免运行到业务路径中途才报缺符号。
     Api api{};
     api.create = ResolveSymbol<TrainingCreateFn>(library_handle, "Training_Create");
     api.destroy = ResolveSymbol<TrainingDestroyFn>(library_handle, "Training_Destroy");
@@ -286,6 +297,7 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
     api.get_test_info = ResolveSymbol<TrainingGetTestInfoFn>(library_handle, "Training_GetTestInfo");
     api.send_file_buffer = ResolveSymbol<TrainingSendFileBufferFn>(library_handle, "Training_SendFileBuffer");
     api.send_file_path = ResolveSymbol<TrainingSendFilePathFn>(library_handle, "Training_SendFilePath");
+    api.download_file = ResolveSymbol<TrainingDownloadFileFn>(library_handle, "Training_DownloadFile");
     api.get_last_error = ResolveSymbol<TrainingGetLastErrorFn>(library_handle, "Training_GetLastError");
     api.pump_events = ResolveSymbol<TrainingPumpEventsFn>(library_handle, "Training_PumpEvents");
     return api;
@@ -309,6 +321,7 @@ void TrainingClient::RegisterListener() {
 }
 
 void TrainingClient::StartEventPump() {
+    // 交互式 CLI 可能长期阻塞在用户输入上，因此单独起线程持续泵 GMainContext。
     stop_event_pump_.store(false);
     event_pump_thread_ = std::thread([this]() {
         while (!stop_event_pump_.load()) {

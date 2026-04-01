@@ -8,6 +8,7 @@
 namespace {
 
 void PrintMenu() {
+    // 菜单既保留原有 Set/Get 调试能力，也暴露上传和下载，方便联调时直接做手工冒烟。
     std::cout << "\n=== Training Client Menu ===\n"
               << "1. SetTestBool\n"
               << "2. SetTestInt\n"
@@ -20,6 +21,7 @@ void PrintMenu() {
               << "9. GetTestString\n"
               << "10. GetTestInfo\n"
               << "11. SendFilePath\n"
+              << "12. DownloadFile\n"
               << "0. Exit\n"
               << "Select: ";
 }
@@ -130,8 +132,18 @@ int main() {
                 PrintInfo(client.GetTestInfo());
                 break;
             case 11: {
-                const auto value = ReadLine("file path: ");
-                std::cout << "SendFilePath -> " << std::boolalpha << client.SendFileByPath(value) << std::noboolalpha
+                // 这里允许 remote 为空，便于快速验证“默认上传到服务端 file/ 根目录”的行为。
+                const auto value = ReadLine("local file path: ");
+                const auto remote = ReadLine("remote relative path (empty uses basename): ");
+                std::cout << "SendFilePath -> " << std::boolalpha << client.SendFileByPath(value, remote) << std::noboolalpha
+                          << std::endl;
+                break;
+            }
+            case 12: {
+                // 下载接口强制输入本地路径，避免示例程序悄悄在未知位置创建文件。
+                const auto remote = ReadLine("remote relative path: ");
+                const auto local = ReadLine("local target path: ");
+                std::cout << "DownloadFile -> " << std::boolalpha << client.DownloadFile(remote, local) << std::noboolalpha
                           << std::endl;
                 break;
             }

@@ -57,6 +57,33 @@ target_compile_definitions(file_transfer_smoke
 
 add_dependencies(file_transfer_smoke training server)
 
+add_executable(download_file_smoke
+    tests/download_file_smoke.cpp
+)
+
+target_link_libraries(download_file_smoke
+    PRIVATE
+        training_client_wrapper
+)
+
+target_compile_definitions(download_file_smoke
+    PRIVATE
+        TRAINING_SERVER_DIR="$<TARGET_FILE_DIR:server>"
+)
+
+add_dependencies(download_file_smoke training server)
+
+add_executable(download_missing_file_smoke
+    tests/download_missing_file_smoke.cpp
+)
+
+target_link_libraries(download_missing_file_smoke
+    PRIVATE
+        training_client_wrapper
+)
+
+add_dependencies(download_missing_file_smoke training server)
+
 add_executable(send_file_once
     tests/send_file_once.cpp
 )
@@ -118,7 +145,7 @@ add_test(
     COMMAND
         dbus-run-session
         -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -f \"\$server_dir\"/training_file_transfer_source.bin; $<TARGET_FILE:server> > /tmp/file_transfer_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:file_transfer_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -f \"\$server_dir\"/training_file_transfer_source.bin; exit \$status"
+        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/file_transfer_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:file_transfer_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
@@ -126,7 +153,23 @@ add_test(
     COMMAND
         dbus-run-session
         -- bash -lc
-        "$<TARGET_FILE:server> > /tmp/concurrent_file_transfer_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:concurrent_file_transfer_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; exit \$status"
+        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/concurrent_file_transfer_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:concurrent_file_transfer_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+)
+
+add_test(
+    NAME download_file_roundtrip
+    COMMAND
+        dbus-run-session
+        -- bash -lc
+        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_file_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_file_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+)
+
+add_test(
+    NAME download_missing_file_roundtrip
+    COMMAND
+        dbus-run-session
+        -- bash -lc
+        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_missing_file_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_missing_file_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(

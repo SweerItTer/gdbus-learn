@@ -5,10 +5,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -17,13 +21,12 @@
 
 namespace training::utils {
 
-// 共享内存单片大小：
-// client 每次只往这 1KB 区域里写一个分片，
-// service 每次也只按当前 chunk_size 读取这一片。
+// 文件分片大小固定为 1KB。
+// 上传和下载都围绕这块固定大小的共享内存做“控制面走 D-Bus、数据面走共享内存”的协议。
 inline constexpr std::size_t kFileChunkSize = 1024;
 
-// 为 shell 命令做最小转义。
-// 当前主要给 md5sum 这种工具调用服务，避免路径里有空格或单引号时命令失效。
+// 对 shell 命令参数做最小转义，当前只服务于 md5sum 调用。
+// 这里不尝试做通用 shell escaping，只覆盖当前工程会遇到的单引号场景。
 inline std::string ShellQuote(const std::string& value) {
     std::string quoted = "'";
     for (const char ch : value) {
@@ -37,9 +40,8 @@ inline std::string ShellQuote(const std::string& value) {
     return quoted;
 }
 
-// 执行外部命令并抓取标准输出。
-// 当前调用栈：
-// client/service -> ComputeMd5 -> ReadCommandOutput -> md5sum
+// 执行一个外部命令并把标准输出完整读回。
+// md5sum 在当前工程里已经足够稳定，因此这里直接把它封装成同步调用。
 inline std::string ReadCommandOutput(const std::string& command) {
     std::array<char, 256> buffer{};
     std::string output;
@@ -61,9 +63,8 @@ inline std::string ReadCommandOutput(const std::string& command) {
     return output;
 }
 
-// 计算完整文件的 md5。
-// client 侧在“发送前”调用一次，用于生成 expected_md5；
-// service 侧在“组包完成后”调用一次，用于校验最终文件。
+// 统一的 MD5 计算入口。
+// 上传前客户端先算一次，服务端组包完成后再算一次，两边结果必须完全一致。
 inline std::string ComputeMd5(const std::filesystem::path& file_path) {
     const std::string output = ReadCommandOutput("md5sum " + ShellQuote(file_path.string()));
     const auto space = output.find(' ');
@@ -74,13 +75,148 @@ inline std::string ComputeMd5(const std::filesystem::path& file_path) {
 }
 
 // 获取当前进程可执行文件所在目录。
-// service 侧用它决定最终落盘目录和 .part 临时文件目录。
+// 这里优先读取 /proc/self/exe 的符号链接，避免 canonical 在某些临时测试环境下过于严格。
 inline std::filesystem::path GetExecutableDir() {
-    return std::filesystem::canonical("/proc/self/exe").parent_path();
+    std::error_code error;
+    const auto symlink_path = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error && !symlink_path.empty()) {
+        return symlink_path.parent_path();
+    }
+
+    const auto canonical_path = std::filesystem::canonical("/proc/self/exe", error);
+    if (!error && !canonical_path.empty()) {
+        return canonical_path.parent_path();
+    }
+
+    throw std::runtime_error("failed to resolve executable directory from /proc/self/exe");
 }
 
-// fd 的最小 RAII 封装。
-// 主要给 shm_open 返回值使用，避免异常路径忘记 close。
+// 约定服务端所有文件都位于 server 可执行文件同级目录下的 file/ 子目录。
+// 上传最终落盘和下载源文件查找都必须从这里开始拼接。
+inline std::filesystem::path GetServiceFileRoot() {
+    return GetExecutableDir() / "file";
+}
+
+// 把外部传入的“服务端相对文件路径”规范化成一个安全的相对路径。
+// 允许 ./a/b.txt、/a/b.txt、a/b.txt 这类写法，但统一剥掉根语义，只保留 file/ 下的相对路径。
+// 任何 .. 越界、空路径、目录路径都会在这里被拒绝。
+inline std::filesystem::path NormalizeRelativeFilePath(const std::string& raw_path) {
+    std::filesystem::path normalized;
+    bool saw_component = false;
+
+    for (const auto& part : std::filesystem::path(raw_path)) {
+        const std::string value = part.string();
+        if (value.empty() || value == "." || value == "/") {
+            continue;
+        }
+        if (value == "..") {
+            throw std::runtime_error("path must stay under service file root");
+        }
+        normalized /= part;
+        saw_component = true;
+    }
+
+    normalized = normalized.lexically_normal();
+    if (!saw_component || normalized.empty() || normalized.filename().empty()) {
+        throw std::runtime_error("path must point to a file under service file root");
+    }
+
+    return normalized;
+}
+
+// 把规范化后的相对路径拼到固定服务端文件根目录下，得到真实文件路径。
+inline std::filesystem::path GetServiceFilePath(const std::string& raw_relative_path) {
+    return GetServiceFileRoot() / NormalizeRelativeFilePath(raw_relative_path);
+}
+
+// 确保目标文件所在的父目录存在。
+// 上传最终 rename 前、客户端下载落盘前都要先调用它。
+inline void EnsureParentDirectory(const std::filesystem::path& file_path) {
+    const auto parent = file_path.parent_path();
+    if (parent.empty()) {
+        return;
+    }
+
+    std::error_code error;
+    std::filesystem::create_directories(parent, error);
+    if (error) {
+        throw std::runtime_error("failed to create directory " + parent.string() + ": " + error.message());
+    }
+}
+
+// 以“若存在则删除”的语义删除文件，避免上层反复写重复的 std::error_code 逻辑。
+// 对“不存在”视为成功，对其他错误转成异常交给调用方决定是否中断流程。
+inline void RemoveIfExists(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    if (error && error != std::errc::no_such_file_or_directory) {
+        throw std::runtime_error("failed to remove path " + path.string() + ": " + error.message());
+    }
+}
+
+// 简单的路径清理守卫。
+// 主要用于临时文件：默认析构时删除，只有在流程完全成功后才显式 Cancel。
+class ScopedPathCleanup {
+public:
+    ScopedPathCleanup() = default;
+    explicit ScopedPathCleanup(std::filesystem::path path) : path_(std::move(path)) {}
+
+    ~ScopedPathCleanup() {
+        if (!active_ || path_.empty()) {
+            return;
+        }
+
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    ScopedPathCleanup(const ScopedPathCleanup&) = delete;
+    ScopedPathCleanup& operator=(const ScopedPathCleanup&) = delete;
+
+    ScopedPathCleanup(ScopedPathCleanup&& other) noexcept
+        : path_(std::move(other.path_)), active_(other.active_) {
+        other.active_ = false;
+    }
+
+    ScopedPathCleanup& operator=(ScopedPathCleanup&& other) noexcept {
+        if (this != &other) {
+            path_ = std::move(other.path_);
+            active_ = other.active_;
+            other.active_ = false;
+        }
+        return *this;
+    }
+
+    void Cancel() { active_ = false; }
+
+private:
+    std::filesystem::path path_{};
+    bool active_{true};
+};
+
+// 从文件中读取一个指定偏移和长度的分片。
+// 下载时服务端按 chunk_index 读取这一段，再写入共享内存给客户端消费。
+inline std::vector<unsigned char> ReadFileChunk(const std::filesystem::path& path,
+                                                std::uint64_t offset,
+                                                std::size_t size) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+        throw std::runtime_error("failed to open file " + path.string());
+    }
+
+    input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!input.good()) {
+        throw std::runtime_error("failed to seek file " + path.string());
+    }
+
+    std::vector<unsigned char> bytes(size, 0);
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
+    const auto actual_size = static_cast<std::size_t>(input.gcount());
+    bytes.resize(actual_size);
+    return bytes;
+}
+
+// 文件描述符 RAII 封装，避免异常路径遗忘 close。
 class ScopedFd {
 public:
     ScopedFd() = default;
@@ -115,9 +251,7 @@ private:
     int fd_ = -1;
 };
 
-// mmap 返回区域的最小 RAII 封装。
-// client 用它持有 1KB 共享内存映射并写入分片；
-// service 用它持有同一块共享内存映射并读取分片。
+// mmap 结果的 RAII 封装，保证异常和早返回时都会自动 munmap。
 class ScopedMappedMemory {
 public:
     ScopedMappedMemory() = default;
@@ -158,8 +292,7 @@ private:
 };
 
 // 打开一块 POSIX 共享内存。
-// client 一般用 O_CREAT | O_RDWR | O_TRUNC 创建；
-// service 一般用 O_RDONLY 打开 client 已创建好的同名共享内存。
+// 上传时客户端以创建者身份读写，服务端只读；下载时反过来由服务端写、客户端读。
 inline ScopedFd OpenSharedMemory(const std::string& shm_name, int oflag, mode_t mode = 0600) {
     const int fd = shm_open(shm_name.c_str(), oflag, mode);
     if (fd < 0) {
@@ -168,9 +301,7 @@ inline ScopedFd OpenSharedMemory(const std::string& shm_name, int oflag, mode_t 
     return ScopedFd(fd);
 }
 
-// 将共享内存映射到当前进程地址空间。
-// 返回的地址仅在当前进程内有效，不会跨进程传递；
-// 真正跨进程共享的是 shm_name 对应的那块共享内存对象。
+// 把共享内存映射到当前进程地址空间。
 inline ScopedMappedMemory MapSharedMemory(int fd, std::size_t size, int prot) {
     void* address = mmap(nullptr, size, prot, MAP_SHARED, fd, 0);
     if (address == MAP_FAILED) {
@@ -179,8 +310,7 @@ inline ScopedMappedMemory MapSharedMemory(int fd, std::size_t size, int prot) {
     return ScopedMappedMemory(address, size);
 }
 
-// 调整共享内存大小。
-// 当前固定扩成 1KB，保证每次可以容纳一个分片。
+// 把共享内存扩成约定好的固定块大小。
 inline void ResizeSharedMemory(int fd, std::size_t size) {
     if (ftruncate(fd, static_cast<off_t>(size)) != 0) {
         throw std::runtime_error(std::string("failed to resize shared memory: ") + std::strerror(errno));
@@ -188,8 +318,7 @@ inline void ResizeSharedMemory(int fd, std::size_t size) {
 }
 
 // 删除共享内存名字。
-// 当前由 client 在发送完成或失败时做最终清理；
-// service 只负责读取，不负责销毁 client 创建的共享内存对象。
+// 真正的底层对象在最后一个 fd / 映射释放后才会消失，这里只负责撤销名字。
 inline void UnlinkSharedMemory(const std::string& shm_name) {
     shm_unlink(shm_name.c_str());
 }

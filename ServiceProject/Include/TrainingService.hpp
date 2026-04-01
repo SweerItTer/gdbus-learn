@@ -25,7 +25,6 @@ public:
 
     void Run();
 
-    // 方法实现
     bool SetTestBool(bool param) override;
     bool SetTestInt(int param) override;
     bool SetTestDouble(double param) override;
@@ -39,7 +38,6 @@ public:
     bool SendFile(unsigned char* file_buf, size_t file_size) override;
 
 private:
-    // method调用
     static gboolean OnHandleSetTestBool(Training* object,
                                         GDBusMethodInvocation* invocation,
                                         gboolean param,
@@ -79,6 +77,7 @@ private:
                                           GDBusMethodInvocation* invocation,
                                           const gchar* transfer_id,
                                           const gchar* file_name,
+                                          const gchar* target_relative_path,
                                           guint64 total_size,
                                           guint chunk_index,
                                           guint chunk_count,
@@ -86,12 +85,23 @@ private:
                                           const gchar* md5_hex,
                                           const gchar* shm_name,
                                           gpointer user_data);
+    static gboolean OnHandleBeginFileDownload(Training* object,
+                                              GDBusMethodInvocation* invocation,
+                                              const gchar* remote_relative_path,
+                                              gpointer user_data);
+    static gboolean OnHandleReadFileChunk(Training* object,
+                                          GDBusMethodInvocation* invocation,
+                                          const gchar* transfer_id,
+                                          guint chunk_index,
+                                          const gchar* shm_name,
+                                          gpointer user_data);
 
-    struct FileTransferState {  // 元数据
+    struct FileTransferState {
         std::string owner_sender{};
         std::string transfer_id{};
-        std::string transfer_key{}; // 唯一连接标志
+        std::string transfer_key{};
         std::string file_name{};
+        std::filesystem::path relative_path{};
         std::uint64_t total_size = 0;
         std::uint32_t chunk_count = 0;
         std::uint32_t next_expected_chunk = 0;
@@ -100,33 +110,57 @@ private:
         std::filesystem::path temp_file_path{};
     };
 
+    struct DownloadTransferState {
+        std::string owner_sender{};
+        std::string transfer_id{};
+        std::string transfer_key{};
+        std::string file_name{};
+        std::filesystem::path relative_path{};
+        std::filesystem::path source_file_path{};
+        std::uint64_t total_size = 0;
+        std::uint32_t chunk_count = 0;
+        std::uint32_t next_expected_chunk = 0;
+        std::string expected_md5{};
+    };
+
     bool HandleIncomingFileChunk(const std::string& sender,
                                  const std::string& transfer_id,
                                  const std::string& file_name,
+                                 const std::string& target_relative_path,
                                  std::uint64_t total_size,
                                  std::uint32_t chunk_index,
                                  std::uint32_t chunk_count,
                                  std::uint32_t chunk_size,
                                  const std::string& md5_hex,
-                                  const std::string& shm_name);
+                                 const std::string& shm_name);
     void ResetFileTransfer(const std::string& transfer_key, bool remove_temp_file);
     bool FinalizeFileTransfer(const std::string& transfer_key);
     bool PrepareTransferState(const std::string& transfer_key,
                               const std::string& sender,
                               const std::string& transfer_id,
                               const std::string& file_name,
+                              const std::filesystem::path& relative_path,
                               std::uint64_t total_size,
                               std::uint32_t chunk_count,
                               const std::string& md5_hex);
+    DownloadTransferState BeginFileDownload(const std::string& sender,
+                                            const std::string& remote_relative_path);
+    std::uint32_t ReadFileChunk(const std::string& sender,
+                                const std::string& transfer_id,
+                                std::uint32_t chunk_index,
+                                const std::string& shm_name);
+    void ResetDownloadTransfer(const std::string& transfer_key);
 
     utils::UniqueMainLoop loop_;
     utils::ScopedBusConnection connection_;
     utils::ScopedBusNameOwner bus_name_owner_;
     utils::UniqueGObject<Training> skeleton_;
-    public_api::TestInfo state_{false, 0, 0.0, {}}; // service 端唯一状态
+    public_api::TestInfo state_{false, 0, 0.0, {}};
     std::mutex file_transfer_mutex_;
     std::unordered_map<std::string, FileTransferState> file_transfers_{};
     std::unordered_map<std::string, std::string> file_name_claims_{};
+    std::mutex download_transfer_mutex_;
+    std::unordered_map<std::string, DownloadTransferState> download_transfers_{};
 };
 
 } // namespace training::service
