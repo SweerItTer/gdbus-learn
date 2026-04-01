@@ -36,8 +36,14 @@ typedef bool (*TrainingGetTestInfoFn)(TrainingLibraryHandle* handle,
 typedef bool (*TrainingSendFileBufferFn)(TrainingLibraryHandle* handle,
                                          const unsigned char* file_buf,
                                          unsigned long long file_size,
-                                         const char* file_name);
-typedef bool (*TrainingSendFilePathFn)(TrainingLibraryHandle* handle, const char* file_path);
+                                         const char* file_name,
+                                         const char* remote_relative_path);
+typedef bool (*TrainingSendFilePathFn)(TrainingLibraryHandle* handle,
+                                       const char* file_path,
+                                       const char* remote_relative_path);
+typedef bool (*TrainingDownloadFileFn)(TrainingLibraryHandle* handle,
+                                       const char* remote_relative_path,
+                                       const char* local_file_path);
 typedef const char* (*TrainingGetLastErrorFn)(void);
 typedef void (*TrainingPumpEventsFn)(TrainingLibraryHandle* handle);
 
@@ -58,8 +64,14 @@ bool Training_GetTestInfo(TrainingLibraryHandle* handle, training::public_api::T
 bool Training_SendFileBuffer(TrainingLibraryHandle* handle,
                              const unsigned char* file_buf,
                              unsigned long long file_size,
-                             const char* file_name);
-bool Training_SendFilePath(TrainingLibraryHandle* handle, const char* file_path);
+                             const char* file_name,
+                             const char* remote_relative_path);
+bool Training_SendFilePath(TrainingLibraryHandle* handle,
+                           const char* file_path,
+                           const char* remote_relative_path);
+bool Training_DownloadFile(TrainingLibraryHandle* handle,
+                           const char* remote_relative_path,
+                           const char* local_file_path);
 const char* Training_GetLastError(void);
 void Training_PumpEvents(TrainingLibraryHandle* handle);
 

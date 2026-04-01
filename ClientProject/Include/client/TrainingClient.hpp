@@ -13,6 +13,7 @@ namespace training::client {
 // 重写方法(调用动态库方法，绕过proxy创建)
 class TrainingClient : public public_api::ITestService, public public_api::ITestListener {
 public:
+    // 运行时加载动态库后，把所有导出符号缓存到这个结构里，后续调用只做一次间接跳转。
     struct Api {
         TrainingCreateFn create{nullptr};
         TrainingDestroyFn destroy{nullptr};
@@ -29,6 +30,7 @@ public:
         TrainingGetTestInfoFn get_test_info{nullptr};
         TrainingSendFileBufferFn send_file_buffer{nullptr};
         TrainingSendFilePathFn send_file_path{nullptr};
+        TrainingDownloadFileFn download_file{nullptr};
         TrainingGetLastErrorFn get_last_error{nullptr};
         TrainingPumpEventsFn pump_events{nullptr};
     };
@@ -50,8 +52,12 @@ public:
     double GetTestDouble() override;
     std::string GeTestString() override;
     public_api::TestInfo GetTestInfo() override;
+    // ITestService 里保留的 buffer 发送入口，默认文件名固定为 upload_buffer.bin。
     bool SendFile(unsigned char* file_buf, size_t file_size) override;
-    bool SendFileByPath(const std::string& file_path);
+    // file_path 是客户端本地源文件路径；remote_relative_path 是服务端 file/ 根目录下的相对目标路径。
+    bool SendFileByPath(const std::string& file_path, const std::string& remote_relative_path = "");
+    // 从服务端相对路径下载到客户端本地指定路径。
+    bool DownloadFile(const std::string& remote_relative_path, const std::string& local_file_path);
 
     void OnTestBoolChanged(bool param) override;
     void OnTestIntChanged(int param) override;

@@ -22,7 +22,7 @@ int main() {
         training::client::TrainingClient client;
 
         const fs::path source = fs::temp_directory_path() / "training_file_transfer_source.bin";
-        const fs::path expected_target = fs::path(TRAINING_SERVER_DIR) / source.filename();
+        const fs::path expected_target = fs::path(TRAINING_SERVER_DIR) / "file" / "test" / "nested" / source.filename();
         const std::string payload(2500, 'x');
 
         {
@@ -30,7 +30,9 @@ int main() {
             output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
         }
 
-        if (!client.SendFileByPath(source.string())) {
+        fs::remove(expected_target);
+
+        if (!client.SendFileByPath(source.string(), "./test/nested/" + source.filename().string())) {
             std::cerr << "SendFileByPath returned false" << std::endl;
             return 1;
         }

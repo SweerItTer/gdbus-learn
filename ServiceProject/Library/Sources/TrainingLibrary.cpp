@@ -9,11 +9,13 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 namespace training::library {
 
 namespace detail {
 
+// 动态库层通过 thread_local 保存最近一次错误，供外层 wrapper 用统一方式读取。
 thread_local std::string g_last_error;
 
 void SetLastError(std::string message) {
@@ -32,6 +34,7 @@ void DrainPendingSignals() {
     }
 }
 
+// 所有导出的 C API 最终都通过这里把异常转换成 bool + last_error。
 template <typename Fn>
 bool InvokeWithError(Fn&& fn) {
     try {
@@ -47,7 +50,7 @@ bool InvokeWithError(Fn&& fn) {
     }
 }
 
-// 带错误输出的函数调用
+// 把 GLib 的 GError 提升成 C++ 异常，避免业务层同时处理两套错误模型。
 template <typename Fn>
 auto CallWithError(Fn&& fn, const char* message) {
     GError* raw_error = nullptr;
@@ -61,15 +64,33 @@ auto CallWithError(Fn&& fn, const char* message) {
     return result;
 }
 
-std::string CreateTransferId() {
-    return "transfer_" + std::to_string(::getpid()) + "_" +
+// 生成一次完整传输会话的唯一 ID，prefix 用于区分上传/下载两类传输。
+std::string CreateTransferId(const char* prefix) {
+    return std::string(prefix) + "_" + std::to_string(::getpid()) + "_" +
            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+// 上传和下载都共享一套共享内存命名规则，避免多个进程同时传输时撞名。
+std::string CreateSharedMemoryName() {
+    return "/training_file_" + std::to_string(::getpid()) + "_" +
+           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+// 当调用方没有显式指定远端路径时，默认退化成“basename 上传到服务端 file/ 根目录”。
+std::filesystem::path ResolveRemotePath(const char* file_name, const char* remote_relative_path) {
+    if (remote_relative_path != nullptr && std::string(remote_relative_path).size() > 0) {
+        return utils::NormalizeRelativeFilePath(remote_relative_path);
+    }
+    if (file_name == nullptr || std::string(file_name).empty()) {
+        throw std::runtime_error("remote relative path is empty");
+    }
+    return utils::NormalizeRelativeFilePath(file_name);
 }
 
 } // namespace detail
 
 TrainingLibraryClient::TrainingLibraryClient() {
-    // 创建 proxy 对象
+    // 动态库内部直接持有一个 proxy，后续所有 D-Bus 调用都经由这条连接发出。
     proxy_.reset(detail::CallWithError(
         [&](GError** error) {
             return training_proxy_new_for_bus_sync(G_BUS_TYPE_SESSION,
@@ -81,7 +102,6 @@ TrainingLibraryClient::TrainingLibraryClient() {
         },
         "failed to create Training proxy: "));
 
-    // 连接到广播信号
     g_signal_connect(proxy_.get(),
                      "on-test-bool-changed",
                      G_CALLBACK(&TrainingLibraryClient::OnRemoteTestBoolChanged),
@@ -102,7 +122,6 @@ TrainingLibraryClient::TrainingLibraryClient() {
                      "on-test-info-changed",
                      G_CALLBACK(&TrainingLibraryClient::OnRemoteTestInfoChanged),
                      this);
-
 }
 
 void TrainingLibraryClient::SetListener(const TrainingListenerCallbacks* callbacks) {
@@ -110,9 +129,6 @@ void TrainingLibraryClient::SetListener(const TrainingListenerCallbacks* callbac
     listener_ = (callbacks != nullptr) ? *callbacks : TrainingListenerCallbacks{};
 }
 
-/* ---------------------------------------
- *        method set调用(区分带返回值)   
- * --------------------------------------- */
 bool TrainingLibraryClient::SetTestBool(bool param) {
     gboolean result = FALSE;
     detail::CallWithError(
@@ -189,17 +205,11 @@ bool TrainingLibraryClient::SetTestInfo(const public_api::TestInfo* param) {
     return static_cast<bool>(result);
 }
 
-/* ---------------------------------------
- *       method get调用(区分带返回值)     
- * --------------------------------------- */
 bool TrainingLibraryClient::GetTestBool(bool* result) {
     gboolean value = FALSE;
     detail::CallWithError(
         [&](GError** error) {
-            return training_call_get_test_bool_sync(proxy_.get(),
-                                                    &value,
-                                                    nullptr,
-                                                    error);
+            return training_call_get_test_bool_sync(proxy_.get(), &value, nullptr, error);
         },
         "failed to call GetTestBool: ");
     if (result != nullptr) {
@@ -212,10 +222,7 @@ bool TrainingLibraryClient::GetTestInt(int* result) {
     gint value = 0;
     detail::CallWithError(
         [&](GError** error) {
-            return training_call_get_test_int_sync(proxy_.get(),
-                                                   &value,
-                                                   nullptr,
-                                                   error);
+            return training_call_get_test_int_sync(proxy_.get(), &value, nullptr, error);
         },
         "failed to call GetTestInt: ");
     if (result != nullptr) {
@@ -228,10 +235,7 @@ bool TrainingLibraryClient::GetTestDouble(double* result) {
     gdouble value = 0.0;
     detail::CallWithError(
         [&](GError** error) {
-            return training_call_get_test_double_sync(proxy_.get(),
-                                                      &value,
-                                                      nullptr,
-                                                      error);
+            return training_call_get_test_double_sync(proxy_.get(), &value, nullptr, error);
         },
         "failed to call GetTestDouble: ");
     if (result != nullptr) {
@@ -244,10 +248,7 @@ bool TrainingLibraryClient::GetTestString(const char** result) {
     gchar* raw_result = nullptr;
     detail::CallWithError(
         [&](GError** error) {
-            return training_call_get_test_string_sync(proxy_.get(),
-                                                      &raw_result,
-                                                      nullptr,
-                                                      error);
+            return training_call_get_test_string_sync(proxy_.get(), &raw_result, nullptr, error);
         },
         "failed to call GetTestString: ");
     utils::UniqueGChar value(raw_result);
@@ -262,10 +263,7 @@ bool TrainingLibraryClient::GetTestInfo(public_api::TestInfo* result) {
     GVariant* raw_result = nullptr;
     detail::CallWithError(
         [&](GError** error) {
-            return training_call_get_test_info_sync(proxy_.get(),
-                                                    &raw_result,
-                                                    nullptr,
-                                                    error);
+            return training_call_get_test_info_sync(proxy_.get(), &raw_result, nullptr, error);
         },
         "failed to call GetTestInfo: ");
     utils::UniqueGVariant value(raw_result);
@@ -276,92 +274,106 @@ bool TrainingLibraryClient::GetTestInfo(public_api::TestInfo* result) {
     return true;
 }
 
-/* ---------------------------------------
- *          文件分包发送实现
- * --------------------------------------- */
 bool TrainingLibraryClient::SendChunks(const std::string& file_name,
+                                       const std::string& remote_relative_path,
                                        std::uint64_t total_size,
                                        const std::string& md5_hex,
                                        const std::function<std::size_t(unsigned char*, std::size_t)>& reader) {
+    // 即便是空文件，也仍然发送一片，保证服务端能收到完整的“开始/结束”语义。
     const std::uint32_t chunk_count = total_size == 0
-                                          ? 1
+                                          ? 1U
                                           : static_cast<std::uint32_t>((total_size + utils::kFileChunkSize - 1) /
                                                                        utils::kFileChunkSize);
-    const std::string transfer_id = detail::CreateTransferId();
-    const std::string shm_name = "/training_file_" + std::to_string(::getpid()) + "_" +
-                                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    const std::string transfer_id = detail::CreateTransferId("transfer");
+    const std::string shm_name = detail::CreateSharedMemoryName();
 
+    // 发送端先创建并映射一块固定大小的共享内存，之后每片都复用这同一块 1KB 空间。
     auto shm_fd = utils::OpenSharedMemory(shm_name, O_CREAT | O_RDWR | O_TRUNC);
     utils::ResizeSharedMemory(shm_fd.Get(), utils::kFileChunkSize);
     auto mapped = utils::MapSharedMemory(shm_fd.Get(), utils::kFileChunkSize, PROT_READ | PROT_WRITE);
     auto* mapped_bytes = static_cast<unsigned char*>(mapped.Get());
 
-    for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
-        const std::size_t current_size = reader(mapped_bytes, utils::kFileChunkSize);
-        gboolean result = FALSE;
+    try {
+        for (std::uint32_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+            // 先把旧内容清掉，避免最后一片不足 1KB 时残留上一片脏数据。
+            std::memset(mapped_bytes, 0, utils::kFileChunkSize);
+            const std::size_t current_size = reader(mapped_bytes, utils::kFileChunkSize);
+            gboolean result = FALSE;
 
-        detail::CallWithError(
-            [&](GError** error) {
-                return training_call_send_file_chunk_sync(proxy_.get(),
-                                                          transfer_id.c_str(),
-                                                          file_name.c_str(),
-                                                          total_size,
-                                                          chunk_index,
-                                                          chunk_count,
-                                                          static_cast<guint>(current_size),
-                                                          md5_hex.c_str(),
-                                                          shm_name.c_str(),
-                                                          &result,
-                                                          nullptr,
-                                                          error);
-            },
-            "failed to call SendFileChunk: ");
+            detail::CallWithError(
+                [&](GError** error) {
+                    return training_call_send_file_chunk_sync(proxy_.get(),
+                                                              transfer_id.c_str(),
+                                                              file_name.c_str(),
+                                                              remote_relative_path.c_str(),
+                                                              total_size,
+                                                              chunk_index,
+                                                              chunk_count,
+                                                              static_cast<guint>(current_size),
+                                                              md5_hex.c_str(),
+                                                              shm_name.c_str(),
+                                                              &result,
+                                                              nullptr,
+                                                              error);
+                },
+                "failed to call SendFileChunk: ");
 
-        if (!result) {
-            utils::UnlinkSharedMemory(shm_name);
-            throw std::runtime_error("SendFileChunk returned false");
+            if (!result) {
+                throw std::runtime_error("SendFileChunk returned false");
+            }
         }
+    } catch (...) {
+        utils::UnlinkSharedMemory(shm_name);
+        throw;
     }
 
     utils::UnlinkSharedMemory(shm_name);
     return true;
 }
 
-bool TrainingLibraryClient::SendFileBuffer(const unsigned char* file_buf, std::size_t file_size, const char* file_name) {
+bool TrainingLibraryClient::SendFileBuffer(const unsigned char* file_buf,
+                                           std::size_t file_size,
+                                           const char* file_name,
+                                           const char* remote_relative_path) {
     if (file_buf == nullptr && file_size != 0) {
         throw std::runtime_error("file buffer is null");
     }
 
+    const auto resolved_remote_path = detail::ResolveRemotePath(file_name, remote_relative_path);
+    // buffer 上传统一先落一个临时文件算 MD5，这样上传 buffer / 上传文件路径共用同一套校验逻辑。
     const std::filesystem::path temp_source =
-        std::filesystem::temp_directory_path() /
-        ("training_buffer_" + std::to_string(::getpid()) + ".bin");
+        std::filesystem::temp_directory_path() / (detail::CreateTransferId("training_buffer") + ".bin");
+    utils::ScopedPathCleanup temp_cleanup(temp_source);
+
     {
         std::ofstream output(temp_source, std::ios::binary | std::ios::trunc);
         if (!output.is_open()) {
             throw std::runtime_error("failed to create temp source file for md5");
         }
         output.write(reinterpret_cast<const char*>(file_buf), static_cast<std::streamsize>(file_size));
+        if (!output.good()) {
+            throw std::runtime_error("failed to write temp source file for md5");
+        }
     }
 
     const std::string md5_hex = utils::ComputeMd5(temp_source);
-    std::filesystem::remove(temp_source);
-
     std::size_t offset = 0;
-    return SendChunks(file_name != nullptr ? file_name : "upload_buffer.bin",
+    return SendChunks(resolved_remote_path.filename().string(),
+                      resolved_remote_path.generic_string(),
                       file_size,
                       md5_hex,
                       [&](unsigned char* destination, std::size_t capacity) {
                           const std::size_t remain = file_size - offset;
                           const std::size_t chunk_size = remain < capacity ? remain : capacity;
                           if (chunk_size > 0) {
-                              std::memcpy(destination, file_buf + offset, chunk_size);
-                              offset += chunk_size;
+                            std::memcpy(destination, file_buf + offset, chunk_size);
+                            offset += chunk_size;
                           }
                           return chunk_size;
                       });
 }
 
-bool TrainingLibraryClient::SendFilePath(const char* file_path) {
+bool TrainingLibraryClient::SendFilePath(const char* file_path, const char* remote_relative_path) {
     if (file_path == nullptr || std::string(file_path).empty()) {
         throw std::runtime_error("file path is empty");
     }
@@ -371,6 +383,8 @@ bool TrainingLibraryClient::SendFilePath(const char* file_path) {
         throw std::runtime_error("file path is invalid");
     }
 
+    const auto resolved_remote_path =
+        detail::ResolveRemotePath(path.filename().string().c_str(), remote_relative_path);
     const std::uint64_t total_size = std::filesystem::file_size(path);
     const std::string md5_hex = utils::ComputeMd5(path);
     std::ifstream input(path, std::ios::binary);
@@ -378,7 +392,8 @@ bool TrainingLibraryClient::SendFilePath(const char* file_path) {
         throw std::runtime_error("failed to open source file");
     }
 
-    return SendChunks(path.filename().string(),
+    return SendChunks(resolved_remote_path.filename().string(),
+                      resolved_remote_path.generic_string(),
                       total_size,
                       md5_hex,
                       [&](unsigned char* destination, std::size_t capacity) {
@@ -387,15 +402,122 @@ bool TrainingLibraryClient::SendFilePath(const char* file_path) {
                       });
 }
 
+bool TrainingLibraryClient::DownloadFile(const char* remote_relative_path, const char* local_file_path) {
+    if (remote_relative_path == nullptr || std::string(remote_relative_path).empty()) {
+        throw std::runtime_error("remote relative path is empty");
+    }
+    if (local_file_path == nullptr || std::string(local_file_path).empty()) {
+        throw std::runtime_error("local file path is empty");
+    }
+
+    const std::filesystem::path local_path(local_file_path);
+    utils::EnsureParentDirectory(local_path);
+
+    std::error_code error;
+    if (std::filesystem::exists(local_path, error) && !error &&
+        std::filesystem::is_directory(local_path, error) && !error) {
+        throw std::runtime_error("local file path points to a directory");
+    }
+
+    gboolean begin_result = FALSE;
+    gchar* raw_transfer_id = nullptr;
+    gchar* raw_file_name = nullptr;
+    guint64 total_size = 0;
+    guint chunk_count = 0;
+    gchar* raw_md5 = nullptr;
+    // 第一步只拿元数据快照，真正的数据搬运在后续逐片读取时发生。
+    detail::CallWithError(
+        [&](GError** call_error) {
+            return training_call_begin_file_download_sync(proxy_.get(),
+                                                          remote_relative_path,
+                                                          &begin_result,
+                                                          &raw_transfer_id,
+                                                          &raw_file_name,
+                                                          &total_size,
+                                                          &chunk_count,
+                                                          &raw_md5,
+                                                          nullptr,
+                                                          call_error);
+        },
+        "failed to call BeginFileDownload: ");
+
+    utils::UniqueGChar transfer_id_holder(raw_transfer_id);
+    utils::UniqueGChar file_name_holder(raw_file_name);
+    utils::UniqueGChar md5_holder(raw_md5);
+    if (!begin_result) {
+        throw std::runtime_error("BeginFileDownload returned false");
+    }
+
+    // 下载同样采用 .part 临时文件，只有校验通过后才替换最终文件。
+    const std::filesystem::path temp_path = local_path.string() + ".part";
+    utils::ScopedPathCleanup temp_cleanup(temp_path);
+    // 下载时共享内存的角色与上传相反：服务端写，共享内存；客户端读，共享内存。
+    const std::string shm_name = detail::CreateSharedMemoryName();
+    auto shm_fd = utils::OpenSharedMemory(shm_name, O_CREAT | O_RDWR | O_TRUNC);
+    utils::ResizeSharedMemory(shm_fd.Get(), utils::kFileChunkSize);
+    auto mapped = utils::MapSharedMemory(shm_fd.Get(), utils::kFileChunkSize, PROT_READ | PROT_WRITE);
+
+    try {
+        std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+        if (!output.is_open()) {
+            throw std::runtime_error("failed to open local temp file for download");
+        }
+
+        for (guint chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+            gboolean read_result = FALSE;
+            guint chunk_size = 0;
+            detail::CallWithError(
+                [&](GError** call_error) {
+                    return training_call_read_file_chunk_sync(proxy_.get(),
+                                                              transfer_id_holder.get(),
+                                                              chunk_index,
+                                                              shm_name.c_str(),
+                                                              &read_result,
+                                                              &chunk_size,
+                                                              nullptr,
+                                                              call_error);
+                },
+                "failed to call ReadFileChunk: ");
+
+            if (!read_result) {
+                throw std::runtime_error("ReadFileChunk returned false");
+            }
+
+            output.write(static_cast<const char*>(mapped.Get()), static_cast<std::streamsize>(chunk_size));
+            if (!output.good()) {
+                throw std::runtime_error("failed to write local download chunk");
+            }
+        }
+
+        output.close();
+        const std::uint64_t local_size = std::filesystem::file_size(temp_path);
+        if (local_size != total_size) {
+            throw std::runtime_error("download size verification failed");
+        }
+        if (utils::ComputeMd5(temp_path) != (md5_holder != nullptr ? md5_holder.get() : "")) {
+            throw std::runtime_error("download md5 verification failed");
+        }
+
+        if (std::filesystem::exists(local_path, error) && !error &&
+            std::filesystem::is_directory(local_path, error) && !error) {
+            throw std::runtime_error("local file path points to a directory");
+        }
+
+        utils::ReplaceFileAtomically(temp_path, local_path);
+    } catch (...) {
+        utils::UnlinkSharedMemory(shm_name);
+        throw;
+    }
+
+    temp_cleanup.Cancel();
+    utils::UnlinkSharedMemory(shm_name);
+    return static_cast<std::uint64_t>(chunk_count) == 0 ? total_size == 0 : true;
+}
+
 void TrainingLibraryClient::PumpEvents() {
     detail::DrainPendingSignals();
 }
-/* ---------------------------------------
- *        信号接收具体操作实现(槽函数)  
- * --------------------------------------- */
-/* ---------------------------------------
- *                信号转发  
- * --------------------------------------- */
+
 void TrainingLibraryClient::OnRemoteTestBoolChanged(Training*, gboolean param, gpointer user_data) {
     auto* self = static_cast<TrainingLibraryClient*>(user_data);
     TrainingListenerCallbacks callbacks{};
@@ -468,18 +590,12 @@ void TrainingLibraryClient::OnRemoteTestInfoChanged(Training*, GVariant* param, 
 
 } // namespace training::library
 
-
-/* ---------------------------------------
- *                C API 实现   
- * --------------------------------------- */
 struct TrainingLibraryHandle {
-    // new结构体是自动实例化 TrainingLibraryClient
     training::library::TrainingLibraryClient client;
 };
 
 extern "C" TrainingLibraryHandle* Training_Create() {
     TrainingLibraryHandle* handle = nullptr;
-    // 实例化结构体
     training::library::detail::InvokeWithError([&]() {
         handle = new TrainingLibraryHandle{};
     });
@@ -487,7 +603,6 @@ extern "C" TrainingLibraryHandle* Training_Create() {
 }
 
 extern "C" void Training_Destroy(TrainingLibraryHandle* handle) {
-    // 析构结构体(自动析构TrainingLibraryClient)
     delete handle;
 }
 
@@ -495,7 +610,6 @@ extern "C" void Training_SetListener(TrainingLibraryHandle* handle, const Traini
     if (handle == nullptr) {
         return;
     }
-
     handle->client.SetListener(callbacks);
 }
 
@@ -602,24 +716,43 @@ extern "C" bool Training_GetTestInfo(TrainingLibraryHandle* handle, training::pu
 extern "C" bool Training_SendFileBuffer(TrainingLibraryHandle* handle,
                                         const unsigned char* file_buf,
                                         unsigned long long file_size,
-                                        const char* file_name) {
+                                        const char* file_name,
+                                        const char* remote_relative_path) {
     if (handle == nullptr) {
         return false;
     }
     return training::library::detail::InvokeWithError([&]() {
-        if (!handle->client.SendFileBuffer(file_buf, static_cast<std::size_t>(file_size), file_name)) {
+        if (!handle->client.SendFileBuffer(file_buf,
+                                           static_cast<std::size_t>(file_size),
+                                           file_name,
+                                           remote_relative_path)) {
             throw std::runtime_error("SendFileBuffer returned false");
         }
     });
 }
 
-extern "C" bool Training_SendFilePath(TrainingLibraryHandle* handle, const char* file_path) {
+extern "C" bool Training_SendFilePath(TrainingLibraryHandle* handle,
+                                      const char* file_path,
+                                      const char* remote_relative_path) {
     if (handle == nullptr) {
         return false;
     }
     return training::library::detail::InvokeWithError([&]() {
-        if (!handle->client.SendFilePath(file_path)) {
+        if (!handle->client.SendFilePath(file_path, remote_relative_path)) {
             throw std::runtime_error("SendFilePath returned false");
+        }
+    });
+}
+
+extern "C" bool Training_DownloadFile(TrainingLibraryHandle* handle,
+                                      const char* remote_relative_path,
+                                      const char* local_file_path) {
+    if (handle == nullptr) {
+        return false;
+    }
+    return training::library::detail::InvokeWithError([&]() {
+        if (!handle->client.DownloadFile(remote_relative_path, local_file_path)) {
+            throw std::runtime_error("DownloadFile returned false");
         }
     });
 }
