@@ -9,6 +9,7 @@
 #include "training-generated.h"
 
 #include <filesystem>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -108,6 +109,8 @@ private:
         std::uint64_t received_size = 0;
         std::string expected_md5{};
         std::filesystem::path temp_file_path{};
+        // 服务端以“最后一次收到合法 chunk 的时间”作为存活依据，超时后自动回收。
+        std::chrono::steady_clock::time_point last_activity{};
     };
 
     struct DownloadTransferState {
@@ -121,6 +124,10 @@ private:
         std::uint32_t chunk_count = 0;
         std::uint32_t next_expected_chunk = 0;
         std::string expected_md5{};
+        // 下载初始化阶段把源文件最后修改时间固定下来，后续分片读取只允许读取同一版本。
+        std::filesystem::file_time_type source_last_write_time{};
+        // 客户端长时间不继续拉取分片时，服务端依赖这个时间点回收下载状态。
+        std::chrono::steady_clock::time_point last_activity{};
     };
 
     bool HandleIncomingFileChunk(const std::string& sender,
@@ -150,6 +157,9 @@ private:
                                 std::uint32_t chunk_index,
                                 const std::string& shm_name);
     void ResetDownloadTransfer(const std::string& transfer_key);
+    // 两类 cleanup 都要求调用方先持有对应 mutex，避免边遍历边 erase 时和并发路径冲突。
+    void CleanupExpiredFileTransfersLocked(const std::chrono::steady_clock::time_point& now);
+    void CleanupExpiredDownloadTransfersLocked(const std::chrono::steady_clock::time_point& now);
 
     utils::UniqueMainLoop loop_;
     utils::ScopedBusConnection connection_;

@@ -342,7 +342,7 @@ bool TrainingLibraryClient::SendFileBuffer(const unsigned char* file_buf,
     const auto resolved_remote_path = detail::ResolveRemotePath(file_name, remote_relative_path);
     // buffer 上传统一先落一个临时文件算 MD5，这样上传 buffer / 上传文件路径共用同一套校验逻辑。
     const std::filesystem::path temp_source =
-        std::filesystem::temp_directory_path() / ("training_buffer_" + std::to_string(::getpid()) + ".bin");
+        std::filesystem::temp_directory_path() / (detail::CreateTransferId("training_buffer") + ".bin");
     utils::ScopedPathCleanup temp_cleanup(temp_source);
 
     {
@@ -490,6 +490,10 @@ bool TrainingLibraryClient::DownloadFile(const char* remote_relative_path, const
         }
 
         output.close();
+        const std::uint64_t local_size = std::filesystem::file_size(temp_path);
+        if (local_size != total_size) {
+            throw std::runtime_error("download size verification failed");
+        }
         if (utils::ComputeMd5(temp_path) != (md5_holder != nullptr ? md5_holder.get() : "")) {
             throw std::runtime_error("download md5 verification failed");
         }
@@ -499,11 +503,7 @@ bool TrainingLibraryClient::DownloadFile(const char* remote_relative_path, const
             throw std::runtime_error("local file path points to a directory");
         }
 
-        utils::RemoveIfExists(local_path);
-        std::filesystem::rename(temp_path, local_path, error);
-        if (error) {
-            throw std::runtime_error("failed to finalize local download file: " + error.message());
-        }
+        utils::ReplaceFileAtomically(temp_path, local_path);
     } catch (...) {
         utils::UnlinkSharedMemory(shm_name);
         throw;

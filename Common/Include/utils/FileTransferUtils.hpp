@@ -154,6 +154,23 @@ inline void RemoveIfExists(const std::filesystem::path& path) {
     }
 }
 
+// 通过 rename 把临时文件原子替换到最终位置。
+// 这里依赖 Linux/POSIX 语义：同一文件系统内 rename 会直接替换已有普通文件，不需要先删旧文件。
+inline void ReplaceFileAtomically(const std::filesystem::path& source_path,
+                                  const std::filesystem::path& target_path) {
+    std::error_code error;
+    if (std::filesystem::exists(target_path, error) && !error &&
+        std::filesystem::is_directory(target_path, error) && !error) {
+        throw std::runtime_error("target path points to a directory: " + target_path.string());
+    }
+
+    error.clear();
+    std::filesystem::rename(source_path, target_path, error);
+    if (error) {
+        throw std::runtime_error("failed to replace path " + target_path.string() + ": " + error.message());
+    }
+}
+
 // 简单的路径清理守卫。
 // 主要用于临时文件：默认析构时删除，只有在流程完全成功后才显式 Cancel。
 class ScopedPathCleanup {

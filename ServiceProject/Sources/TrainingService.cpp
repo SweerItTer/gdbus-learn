@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -19,6 +20,7 @@ namespace training::service {
 namespace {
 
 constexpr const char* kDbusErrorName = "com.example.Training.Error";
+constexpr std::chrono::milliseconds kDefaultTransferTimeout{30000};
 
 // 服务端对下载传输也使用 transfer_id，把一次“下载初始化 + 多次分片读取”绑定起来。
 std::string CreateTransferIdValue() {
@@ -42,6 +44,24 @@ std::string BuildTransferKeyValue(const std::string& sender, const std::string& 
 // 所有服务端业务错误都走统一的 D-Bus error name，客户端就能收到带 message 的 GError。
 void ReturnInvocationErrorValue(GDBusMethodInvocation* invocation, const std::string& message) {
     g_dbus_method_invocation_return_dbus_error(invocation, kDbusErrorName, message.c_str());
+}
+
+std::chrono::milliseconds GetTransferTimeoutValue() {
+    const char* raw_value = std::getenv("TRAINING_TRANSFER_TIMEOUT_MS");
+    if (raw_value == nullptr || std::string(raw_value).empty()) {
+        return kDefaultTransferTimeout;
+    }
+
+    try {
+        const auto parsed = std::stoll(raw_value);
+        if (parsed <= 0) {
+            return kDefaultTransferTimeout;
+        }
+        // 测试里会把这个超时时间压得很短，方便稳定复现“残留状态自动回收”的场景。
+        return std::chrono::milliseconds(parsed);
+    } catch (...) {
+        return kDefaultTransferTimeout;
+    }
 }
 
 } // namespace
@@ -361,8 +381,10 @@ bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
     }
 
     const std::string transfer_key = BuildTransferKeyValue(sender, transfer_id);
+    const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(file_transfer_mutex_);
+        CleanupExpiredFileTransfersLocked(now);
         if (file_transfers_.find(transfer_key) == file_transfers_.end()) {
             if (chunk_index != 0) {
                 throw std::runtime_error("upload must start from chunk 0");
@@ -387,6 +409,7 @@ bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
         if (it == file_transfers_.end()) {
             throw std::runtime_error("upload state was lost");
         }
+        it->second.last_activity = now;
         transfer_state = it->second;
     }
 
@@ -430,6 +453,7 @@ bool TrainingService::HandleIncomingFileChunk(const std::string& sender,
         }
         it->second.received_size += chunk_size;
         it->second.next_expected_chunk += 1;
+        it->second.last_activity = std::chrono::steady_clock::now();
     }
 
     // 最后一包到达后立刻做完整性校验和原子落盘。
@@ -468,8 +492,7 @@ bool TrainingService::FinalizeFileTransfer(const std::string& transfer_key) {
     // 目标路径固定落在 server/file/ 根目录下，不允许越界到根目录外。
     const auto target_path = utils::GetServiceFilePath(transfer_state.relative_path.string());
     utils::EnsureParentDirectory(target_path);
-    utils::RemoveIfExists(target_path);
-    std::filesystem::rename(transfer_state.temp_file_path, target_path);
+    utils::ReplaceFileAtomically(transfer_state.temp_file_path, target_path);
     return true;
 }
 
@@ -508,6 +531,7 @@ bool TrainingService::PrepareTransferState(const std::string& transfer_key,
                                            const std::string& md5_hex) {
     // 并发冲突粒度是“完整相对文件路径”，不再是单纯文件名。
     const std::string claim_key = relative_path.string();
+    CleanupExpiredFileTransfersLocked(std::chrono::steady_clock::now());
     if (file_name_claims_.find(claim_key) != file_name_claims_.end()) {
         return false;
     }
@@ -526,6 +550,7 @@ bool TrainingService::PrepareTransferState(const std::string& transfer_key,
     state.received_size = 0;
     state.expected_md5 = md5_hex;
     state.temp_file_path = utils::GetServiceFileRoot() / ("." + transfer_id + ".part");
+    state.last_activity = std::chrono::steady_clock::now();
 
     utils::RemoveIfExists(state.temp_file_path);
     file_name_claims_[claim_key] = transfer_key;
@@ -561,8 +586,11 @@ TrainingService::DownloadTransferState TrainingService::BeginFileDownload(const 
     state.chunk_count = CalculateChunkCount(state.total_size);
     state.next_expected_chunk = 0;
     state.expected_md5 = utils::ComputeMd5(source_file_path);
+    state.source_last_write_time = std::filesystem::last_write_time(source_file_path);
+    state.last_activity = std::chrono::steady_clock::now();
 
     std::lock_guard<std::mutex> lock(download_transfer_mutex_);
+    CleanupExpiredDownloadTransfersLocked(state.last_activity);
     download_transfers_[state.transfer_key] = state;
     return state;
 }
@@ -579,10 +607,12 @@ std::uint32_t TrainingService::ReadFileChunk(const std::string& sender,
     DownloadTransferState state{};
     {
         std::lock_guard<std::mutex> lock(download_transfer_mutex_);
+        CleanupExpiredDownloadTransfersLocked(std::chrono::steady_clock::now());
         auto it = download_transfers_.find(transfer_key);
         if (it == download_transfers_.end()) {
             throw std::runtime_error("download transfer was not found");
         }
+        it->second.last_activity = std::chrono::steady_clock::now();
         state = it->second;
     }
 
@@ -592,11 +622,9 @@ std::uint32_t TrainingService::ReadFileChunk(const std::string& sender,
     if (chunk_index >= state.chunk_count) {
         throw std::runtime_error("download chunk index is out of range");
     }
-    if (!std::filesystem::exists(state.source_file_path)) {
-        throw std::runtime_error("remote file no longer exists");
-    }
-    // 这里再次比对 MD5，是为了把“下载过程中源文件变化”显式拦下来。
-    if (utils::ComputeMd5(state.source_file_path) != state.expected_md5) {
+    if (!std::filesystem::exists(state.source_file_path) ||
+        std::filesystem::file_size(state.source_file_path) != state.total_size ||
+        std::filesystem::last_write_time(state.source_file_path) != state.source_last_write_time) {
         throw std::runtime_error("remote file changed during download");
     }
 
@@ -622,6 +650,7 @@ std::uint32_t TrainingService::ReadFileChunk(const std::string& sender,
             throw std::runtime_error("download transfer was lost");
         }
         it->second.next_expected_chunk += 1;
+        it->second.last_activity = std::chrono::steady_clock::now();
         // 最后一片读完后立刻释放服务端侧下载状态。
         if (it->second.next_expected_chunk >= it->second.chunk_count) {
             download_transfers_.erase(it);
@@ -634,6 +663,41 @@ std::uint32_t TrainingService::ReadFileChunk(const std::string& sender,
 void TrainingService::ResetDownloadTransfer(const std::string& transfer_key) {
     std::lock_guard<std::mutex> lock(download_transfer_mutex_);
     download_transfers_.erase(transfer_key);
+}
+
+void TrainingService::CleanupExpiredFileTransfersLocked(const std::chrono::steady_clock::time_point& now) {
+    const auto timeout = GetTransferTimeoutValue();
+    for (auto it = file_transfers_.begin(); it != file_transfers_.end();) {
+        if (now - it->second.last_activity < timeout) {
+            ++it;
+            continue;
+        }
+
+        // 超时上传不仅要删状态，还要同步释放 claim 和未完成的 .part，避免后续同路径一直被卡死。
+        const auto relative_path = it->second.relative_path.string();
+        const auto temp_file_path = it->second.temp_file_path;
+        auto claim_it = file_name_claims_.find(relative_path);
+        if (claim_it != file_name_claims_.end() && claim_it->second == it->first) {
+            file_name_claims_.erase(claim_it);
+        }
+        it = file_transfers_.erase(it);
+        try {
+            utils::RemoveIfExists(temp_file_path);
+        } catch (...) {
+        }
+    }
+}
+
+void TrainingService::CleanupExpiredDownloadTransfersLocked(const std::chrono::steady_clock::time_point& now) {
+    const auto timeout = GetTransferTimeoutValue();
+    for (auto it = download_transfers_.begin(); it != download_transfers_.end();) {
+        if (now - it->second.last_activity < timeout) {
+            ++it;
+            continue;
+        }
+        // 下载没有服务端临时文件要清，因此这里只需要回收内存里的会话状态。
+        it = download_transfers_.erase(it);
+    }
 }
 
 } // namespace training::service
