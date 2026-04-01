@@ -37,8 +37,36 @@
     <method name="GetTestString">
       <arg name="result" type="s" direction="out"/>
     </method>
-    <method name="GetTestInfo">
+    <method name="GetTestInfo">     <!-- 数据序列 -->
       <arg name="result" type="(bids)" direction="out"/>
+    </method>
+    <method name="SendFileChunk">
+      <arg name="transfer_id" type="s" direction="in"/>
+      <arg name="file_name" type="s" direction="in"/>
+      <arg name="target_relative_path" type="s" direction="in"/>
+      <arg name="total_size" type="t" direction="in"/>
+      <arg name="chunk_index" type="u" direction="in"/>
+      <arg name="chunk_count" type="u" direction="in"/>
+      <arg name="chunk_size" type="u" direction="in"/>
+      <arg name="md5_hex" type="s" direction="in"/>
+      <arg name="shm_name" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+    </method>
+    <method name="BeginFileDownload">
+      <arg name="remote_relative_path" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+      <arg name="transfer_id" type="s" direction="out"/>
+      <arg name="file_name" type="s" direction="out"/>
+      <arg name="total_size" type="t" direction="out"/>
+      <arg name="chunk_count" type="u" direction="out"/>
+      <arg name="md5_hex" type="s" direction="out"/>
+    </method>
+    <method name="ReadFileChunk">
+      <arg name="transfer_id" type="s" direction="in"/>
+      <arg name="chunk_index" type="u" direction="in"/>
+      <arg name="shm_name" type="s" direction="in"/>
+      <arg name="result" type="b" direction="out"/>
+      <arg name="chunk_size" type="u" direction="out"/>
     </method>
   <!-- 信号 -->
     <signal name="OnTestBoolChanged">

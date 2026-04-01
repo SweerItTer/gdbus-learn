@@ -8,7 +8,6 @@ target_include_directories(training_common
 add_library(training_utils STATIC
     Sources/utils/ScopedBusConnection.cpp
     Sources/utils/ScopedBusNameOwner.cpp
-    Sources/utils/ScopedExportedInterface.cpp
 )
 
 set_target_properties(training_utils PROPERTIES
