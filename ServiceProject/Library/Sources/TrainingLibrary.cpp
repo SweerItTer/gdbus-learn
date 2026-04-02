@@ -2,6 +2,7 @@
 
 #include <public/DbusConstants.hpp>
 #include <utils/ContractSerializer.hpp>
+#include <utils/DbusRuntime.hpp>
 #include <utils/FileTransferUtils.hpp>
 
 #include <chrono>
@@ -93,7 +94,7 @@ TrainingLibraryClient::TrainingLibraryClient() {
     // 动态库内部直接持有一个 proxy，后续所有 D-Bus 调用都经由这条连接发出。
     proxy_.reset(detail::CallWithError(
         [&](GError** error) {
-            return training_proxy_new_for_bus_sync(G_BUS_TYPE_SESSION,
+            return training_proxy_new_for_bus_sync(utils::kBusType,
                                                    G_DBUS_PROXY_FLAGS_NONE,
                                                    training::kBusName,
                                                    training::kObjectPath,
@@ -260,6 +261,7 @@ bool TrainingLibraryClient::GetTestString(const char** result) {
 }
 
 bool TrainingLibraryClient::GetTestInfo(public_api::TestInfo* result) {
+    // 把远端 TestInfo 同步到本地缓存。
     GVariant* raw_result = nullptr;
     detail::CallWithError(
         [&](GError** error) {
@@ -279,6 +281,7 @@ bool TrainingLibraryClient::SendChunks(const std::string& file_name,
                                        std::uint64_t total_size,
                                        const std::string& md5_hex,
                                        const std::function<std::size_t(unsigned char*, std::size_t)>& reader) {
+    // 统一的分片上传入口。
     // 即便是空文件，也仍然发送一片，保证服务端能收到完整的“开始/结束”语义。
     const std::uint32_t chunk_count = total_size == 0
                                           ? 1U
@@ -425,7 +428,7 @@ bool TrainingLibraryClient::DownloadFile(const char* remote_relative_path, const
     guint64 total_size = 0;
     guint chunk_count = 0;
     gchar* raw_md5 = nullptr;
-    // 第一步只拿元数据快照，真正的数据搬运在后续逐片读取时发生。
+    // 先拿元数据快照，再进入逐片下载。
     detail::CallWithError(
         [&](GError** call_error) {
             return training_call_begin_file_download_sync(proxy_.get(),
@@ -448,10 +451,10 @@ bool TrainingLibraryClient::DownloadFile(const char* remote_relative_path, const
         throw std::runtime_error("BeginFileDownload returned false");
     }
 
-    // 下载同样采用 .part 临时文件，只有校验通过后才替换最终文件。
+    // 下载同样先落临时文件。
     const std::filesystem::path temp_path = local_path.string() + ".part";
     utils::ScopedPathCleanup temp_cleanup(temp_path);
-    // 下载时共享内存的角色与上传相反：服务端写，共享内存；客户端读，共享内存。
+    // 下载时共享内存由服务端写、客户端读。
     const std::string shm_name = detail::CreateSharedMemoryName();
     auto shm_fd = utils::OpenSharedMemory(shm_name, O_CREAT | O_RDWR | O_TRUNC);
     utils::ResizeSharedMemory(shm_fd.Get(), utils::kFileChunkSize);
@@ -515,6 +518,7 @@ bool TrainingLibraryClient::DownloadFile(const char* remote_relative_path, const
 }
 
 void TrainingLibraryClient::PumpEvents() {
+    // 推进一次主上下文。
     detail::DrainPendingSignals();
 }
 

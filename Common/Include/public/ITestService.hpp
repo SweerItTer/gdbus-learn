@@ -20,8 +20,6 @@ public:
     virtual double GetTestDouble() = 0;
     virtual std::string GeTestString() = 0;
     virtual TestInfo GetTestInfo() = 0;
-    // send 接口
-    virtual bool SendFile(unsigned char* file_buf, size_t file_size) = 0;
 };
 
 } // namespace training::public_api

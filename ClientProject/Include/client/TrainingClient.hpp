@@ -52,8 +52,6 @@ public:
     double GetTestDouble() override;
     std::string GeTestString() override;
     public_api::TestInfo GetTestInfo() override;
-    // ITestService 里保留的 buffer 发送入口，默认文件名固定为 upload_buffer.bin。
-    bool SendFile(unsigned char* file_buf, size_t file_size) override;
     // file_path 是客户端本地源文件路径；remote_relative_path 是服务端 file/ 根目录下的相对目标路径。
     bool SendFileByPath(const std::string& file_path, const std::string& remote_relative_path = "");
     // 从服务端相对路径下载到客户端本地指定路径。

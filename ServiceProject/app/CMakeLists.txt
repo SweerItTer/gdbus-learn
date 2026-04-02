@@ -3,3 +3,8 @@ add_executable(server
 )
 
 target_link_libraries(server PRIVATE core)
+
+install(
+    TARGETS server
+    RUNTIME DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/training"
+)
