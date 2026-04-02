@@ -3,9 +3,13 @@
 #include <exception>
 #include <iostream>
 
+// ---------------------------------------------------------------------------
+// 基础读写冒烟
+// ---------------------------------------------------------------------------
 int main() {
     try {
         training::client::TrainingClient client;
+        // 先写后读，验证最基本的代理链路。
         client.SetTestInt(42);
 
         const int result = client.GetTestInt();

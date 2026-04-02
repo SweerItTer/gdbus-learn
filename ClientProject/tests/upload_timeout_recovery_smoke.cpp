@@ -17,6 +17,9 @@
 namespace fs = std::filesystem;
 namespace utils = training::utils;
 
+// ---------------------------------------------------------------------------
+// 辅助函数
+// ---------------------------------------------------------------------------
 namespace {
 
 template <typename Fn>
@@ -48,6 +51,9 @@ void WriteFile(const fs::path& path, const std::string& content) {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// 超时恢复
+// ---------------------------------------------------------------------------
 int main() {
     try {
         const std::string payload(utils::kFileChunkSize * 2, 'p');
@@ -56,10 +62,12 @@ int main() {
         const fs::path local_source = fs::temp_directory_path() / "upload_timeout_recovery_source.bin";
         const fs::path server_target = fs::path(TRAINING_SERVER_DIR) / "file" / "timeouts" / "recover.bin";
 
+        // 先准备一份两片大小的源文件。
         WriteFile(local_source, payload);
         fs::remove(server_target);
         fs::remove_all(server_target.parent_path());
 
+        // 直接连总线，手动发第一片上传请求。
         GError* raw_error = nullptr;
         GDBusConnection* raw_connection = g_bus_get_sync(utils::kBusType, nullptr, &raw_error);
         utils::UniqueGObject<GDBusConnection> connection(raw_connection);
@@ -111,6 +119,7 @@ int main() {
         // 服务端测试进程把超时配置成 200ms，这里等 500ms 足够覆盖自动回收窗口。
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
+        // 再走动态库正常上传，验证服务端超时状态已回收。
         void* library_handle = dlopen(TRAINING_LIBRARY_PATH, RTLD_NOW);
         if (library_handle == nullptr) {
             throw std::runtime_error(std::string("failed to load training library: ") + dlerror());
@@ -138,11 +147,13 @@ int main() {
         destroy_fn(handle);
         dlclose(library_handle);
 
+        // 重试成功后，服务端文件必须存在。
         if (!fs::exists(server_target)) {
             std::cerr << "server target was not created after timeout recovery" << std::endl;
             return 1;
         }
 
+        // 清理测试痕迹。
         fs::remove(local_source);
         fs::remove(server_target);
         fs::remove_all(server_target.parent_path());

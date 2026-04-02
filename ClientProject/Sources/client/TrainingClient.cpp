@@ -267,7 +267,7 @@ void TrainingClient::DispatchRemoteTestInfoChanged(void* user_data, const public
 }
 
 TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
-    // 所有符号在构造时一次性解析，失败则尽早暴露，避免运行到业务路径中途才报缺符号。
+    // 构造时一次性解析全部导出符号。
     Api api{};
     api.create = ResolveSymbol<TrainingCreateFn>(library_handle, "Training_Create");
     api.destroy = ResolveSymbol<TrainingDestroyFn>(library_handle, "Training_Destroy");
@@ -297,6 +297,7 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
 
 // 在此注册信号触发的回调(更新数据)
 void TrainingClient::RegisterListener() {
+    // 注册远端回调。
     TrainingListenerCallbacks callbacks{};
     callbacks.user_data = this;
     callbacks.on_test_bool_changed = &TrainingClient::DispatchRemoteTestBoolChanged;
@@ -308,7 +309,7 @@ void TrainingClient::RegisterListener() {
 }
 
 void TrainingClient::StartEventPump() {
-    // 交互式 CLI 可能长期阻塞在用户输入上，因此单独起线程持续泵 GMainContext。
+    // 后台线程持续泵事件。
     stop_event_pump_.store(false);
     event_pump_thread_ = std::thread([this]() {
         while (!stop_event_pump_.load()) {
@@ -324,6 +325,7 @@ void TrainingClient::StartEventPump() {
 }
 
 void TrainingClient::StopEventPump() {
+    // 先停线程，再释放资源。
     stop_event_pump_.store(true);
     if (event_pump_thread_.joinable()) {
         event_pump_thread_.join();

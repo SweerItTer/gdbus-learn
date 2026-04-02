@@ -7,6 +7,9 @@
 
 namespace fs = std::filesystem;
 
+// ---------------------------------------------------------------------------
+// 文件辅助
+// ---------------------------------------------------------------------------
 namespace {
 
 std::string ReadFile(const fs::path& path) {
@@ -27,6 +30,9 @@ void WriteFile(const fs::path& path, const std::string& content) {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// 覆盖下载
+// ---------------------------------------------------------------------------
 int main() {
     try {
         training::client::TrainingClient client;
@@ -37,21 +43,25 @@ int main() {
         const std::string remote_payload(2048, 'n');
         const std::string local_payload = "old-local-content";
 
+        // 服务端准备新内容。
         fs::create_directories(remote_path.parent_path());
         WriteFile(remote_path, remote_payload);
         // 先放一个旧文件，验证下载成功后最终内容来自服务端而不是残留旧内容。
         WriteFile(local_target, local_payload);
 
+        // 执行覆盖下载。
         if (!client.DownloadFile("downloads/overwrite.bin", local_target.string())) {
             std::cerr << "DownloadFile returned false" << std::endl;
             return 1;
         }
 
+        // 校验旧文件已被新内容替换。
         if (ReadFile(local_target) != remote_payload) {
             std::cerr << "download overwrite target payload mismatch" << std::endl;
             return 1;
         }
 
+        // 清理测试痕迹。
         fs::remove(local_target);
         fs::remove(remote_path);
         fs::remove_all(server_root / "downloads");
