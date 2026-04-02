@@ -5,6 +5,9 @@
 #include <limits>
 #include <string>
 
+// ---------------------------------------------------------------------------
+// 菜单辅助
+// ---------------------------------------------------------------------------
 namespace {
 
 void PrintMenu() {
@@ -55,6 +58,9 @@ void PrintInfo(const training::public_api::TestInfo& info) {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// 客户端入口
+// ---------------------------------------------------------------------------
 int main() {
     try {
         training::client::TrainingClient client;
@@ -63,6 +69,7 @@ int main() {
         while (true) {
             PrintMenu();
 
+            // 先读取菜单项，再分发到具体接口。
             int choice = -1;
             if (!(std::cin >> choice)) {
                 ClearInput();
@@ -75,12 +82,14 @@ int main() {
                 std::cout << "Exiting training_client." << std::endl;
                 return 0;
             case 1: {
+                // 手工验证 bool 写入。
                 const bool value = ReadBool("bool value");
                 std::cout << "SetTestBool -> " << std::boolalpha << client.SetTestBool(value) << std::noboolalpha
                           << std::endl;
                 break;
             }
             case 2: {
+                // 手工验证 int 写入。
                 int value = 0;
                 std::cout << "int value: ";
                 std::cin >> value;
@@ -89,6 +98,7 @@ int main() {
                 break;
             }
             case 3: {
+                // 手工验证 double 写入。
                 double value = 0.0;
                 std::cout << "double value: ";
                 std::cin >> value;
@@ -97,12 +107,14 @@ int main() {
                 break;
             }
             case 4: {
+                // 手工验证 string 写入。
                 const auto value = ReadLine("string value: ");
                 std::cout << "SetTestString -> " << std::boolalpha << client.SetTestString(value) << std::noboolalpha
                           << std::endl;
                 break;
             }
             case 5: {
+                // 组合结构体一次性写入。
                 training::public_api::TestInfo info{};
                 info.bool_param = ReadBool("bool value");
                 std::cout << "int value: ";
@@ -119,15 +131,19 @@ int main() {
                           << std::endl;
                 break;
             case 7:
+                // 读取最新 int。
                 std::cout << "GetTestInt -> " << client.GetTestInt() << std::endl;
                 break;
             case 8:
+                // 读取最新 double。
                 std::cout << "GetTestDouble -> " << client.GetTestDouble() << std::endl;
                 break;
             case 9:
+                // 读取最新 string。
                 std::cout << "GetTestString -> " << client.GeTestString() << std::endl;
                 break;
             case 10:
+                // 读取完整结构体。
                 std::cout << "GetTestInfo -> ";
                 PrintInfo(client.GetTestInfo());
                 break;
@@ -148,6 +164,7 @@ int main() {
                 break;
             }
             default:
+                // 保持循环，等待下一次输入。
                 std::cout << "Unknown option." << std::endl;
                 break;
             }

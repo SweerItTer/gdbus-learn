@@ -7,6 +7,9 @@
 
 namespace fs = std::filesystem;
 
+// ---------------------------------------------------------------------------
+// 文件辅助
+// ---------------------------------------------------------------------------
 namespace {
 
 std::string ReadFile(const fs::path& path) {
@@ -29,6 +32,9 @@ int RunSendFile(const fs::path& file_path, const std::string& remote_path) {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// 并发上传
+// ---------------------------------------------------------------------------
 int main() {
     try {
         const fs::path server_dir = fs::path(TRAINING_SERVER_DIR) / "file";
@@ -49,6 +55,7 @@ int main() {
         fs::remove(server_dir / "parallel" / "a" / source_a.filename());
         fs::remove(server_dir / "parallel" / "b" / source_b.filename());
 
+        // 两个子进程并发上传不同目标。
         auto future_a = std::async(std::launch::async, [&]() {
             return RunSendFile(source_a, "parallel/a/concurrent_a.bin");
         });
@@ -63,6 +70,7 @@ int main() {
             return 1;
         }
 
+        // 两个目标文件都要完整落盘。
         if (ReadFile(server_dir / "parallel" / "a" / source_a.filename()) != payload_a ||
             ReadFile(server_dir / "parallel" / "b" / source_b.filename()) != payload_b) {
             std::cerr << "concurrent different-name target mismatch" << std::endl;
@@ -88,6 +96,7 @@ int main() {
         fs::remove(server_dir / "alpha" / "same_ok.bin");
         fs::remove(server_dir / "beta" / "same_ok.bin");
 
+        // 目标路径不同，文件名相同也不应互斥。
         auto future_same_ok_a = std::async(std::launch::async, [&]() {
             return RunSendFile(same_ok_a, "alpha/same_ok.bin");
         });
@@ -129,6 +138,7 @@ int main() {
 
         fs::remove(server_dir / "same" / "same_name.bin");
 
+        // 同一路径冲突时，只允许一个成功。
         auto future_same_a = std::async(std::launch::async, [&]() {
             return RunSendFile(same_a, "same/same_name.bin");
         });
@@ -149,6 +159,7 @@ int main() {
             return 1;
         }
 
+        // 清理测试痕迹。
         fs::remove(source_a);
         fs::remove(source_b);
         fs::remove(server_dir / "parallel" / "a" / source_a.filename());

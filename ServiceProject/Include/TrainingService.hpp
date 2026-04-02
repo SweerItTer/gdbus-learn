@@ -36,7 +36,6 @@ public:
     double GetTestDouble() override;
     std::string GeTestString() override;
     public_api::TestInfo GetTestInfo() override;
-    bool SendFile(unsigned char* file_buf, size_t file_size) override;
 
 private:
     static gboolean OnHandleSetTestBool(Training* object,
@@ -150,8 +149,8 @@ private:
                               std::uint64_t total_size,
                               std::uint32_t chunk_count,
                               const std::string& md5_hex);
-    DownloadTransferState BeginFileDownload(const std::string& sender,
-                                            const std::string& remote_relative_path);
+    DownloadTransferState PrepareDownloadTransfer(const std::string& sender,
+                                                  const std::string& remote_relative_path);
     std::uint32_t ReadFileChunk(const std::string& sender,
                                 const std::string& transfer_id,
                                 std::uint32_t chunk_index,

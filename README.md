@@ -1,25 +1,27 @@
 # gdbus-learn
 
-一个基于 `gdbus` 的学习项目，用来练习以下内容：
+一个基于 `gdbus` 的双工程示例项目，用来演示下面这些能力：
 
-- 使用 `CMake` 组织双工程
-- 使用 `gdbus-codegen` 根据 XML 生成接口绑定代码
-- 使用 `gdbus` 完成 `service` / `client` 进程间通信
-- 通过动态库封装客户端调用逻辑
-- 使用共享内存完成大文件分片传输
+- 服务端/客户端分层通信
+- `gdbus-codegen` 生成接口绑定
+- 普通数据的 `Set/Get + Signal` 同步
+- 动态库封装客户端调用逻辑
+- 基于共享内存的大文件分片传输
+- 在真实全局 `system bus` 上运行
 
-当前项目已经实现了：
+## 项目是做什么的
 
-- `ITestService` 的 `Set` / `Get` 接口
-- `ITestListener` 广播通知
-- `server` 保存最新状态并向 client 广播
-- `client` 侧命令行交互
-- `libtraining.so` 动态库加载
-- 基于共享内存的文件发送、组包、MD5 校验和落盘
-- 多终端联调
-- `TrainingClient` 可继承扩展，便于后续接入 UI
+项目提供一个 D-Bus 服务 `com.example.Training`，包含两类能力：
 
-## 目录结构
+1. 普通数据通信  
+   支持 `bool`、`int`、`double`、`string` 和结构体 `TestInfo` 的远程 `Set/Get`。
+
+2. 文件传输  
+   支持客户端上传文件到服务端，也支持客户端从服务端下载文件到本地。
+
+当前代码默认运行在 **全局 `system bus`** 上，不再依赖手工启动 `session bus`，也不需要手工设置 `DBUS_SESSION_BUS_ADDRESS`。
+
+## 项目结构
 
 ```text
 gdbus-learn/
@@ -37,306 +39,335 @@ gdbus-learn/
 │   ├── Sources/
 │   ├── app/
 │   └── tests/
-└── build/
+└── deploy/
+    ├── dbus/
+    └── systemd/
 ```
 
-各目录职责如下：
-
 - `Common/`
-  放公共接口、公共工具、序列化和共享内存辅助逻辑。
+  公共接口、工具类、序列化和共享内存辅助逻辑。
 - `ServiceProject/`
-  放服务端实现，最终生成 `server` 和 `libtraining.so`。
+  服务端实现，产出 `server`。
 - `ServiceProject/Library/`
-  放动态库内部实现，负责封装 client 侧对 D-Bus 的访问。
+  动态库实现，产出 `libtraining.so`，供客户端运行时加载。
 - `ClientProject/`
-  放客户端包装类、命令行程序和测试代码。
+  客户端包装层、命令行例程和测试代码。
+- `deploy/dbus/`
+  system bus policy 配置。
+- `deploy/systemd/`
+  `systemd` 服务模板。
 
-## 工程结构说明
+## 通信原理
 
-项目由两个工程组成：
+### 1. 普通数据同步
 
-### 1. ServiceProject
-
-负责编译出：
-
-- `server`
-- `libtraining.so`
-
-其中：
-
-- `server` 是真正提供 D-Bus 服务的进程
-- `libtraining.so` 是供客户端运行时加载的动态库
-
-`server` 负责：
-
-- 创建 D-Bus connection
-- 注册 skeleton 和 method 回调
-- 保存 `TestInfo` 最新状态
-- 处理 `Set` / `Get`
-- 广播 `OnTest*Changed`
-- 接收共享内存文件分片并组包落盘
-
-### 2. ClientProject
-
-负责编译出：
-
-- `training_client`
-
-`training_client` 本身不直接实现底层 D-Bus 调用，而是：
-
-- 自己实现 `TrainingClient`
-- 继承 `ITestService` 和 `ITestListener`
-- 在运行时加载 `libtraining.so`
-- 通过动态库导出的接口完成 `Set` / `Get` / 文件发送
-
-## 接口与通信方式
-
-项目使用 `Common/Interfaces/com.example.Training.xml` 作为 D-Bus 接口描述文件，并通过 `gdbus-codegen` 生成对应绑定代码。
-
-当前主要包含两类能力：
-
-### 1. 普通数据通信
-
-- `SetTestBool`
-- `SetTestInt`
-- `SetTestDouble`
-- `SetTestString`
-- `SetTestInfo`
-- `GetTestBool`
-- `GetTestInt`
-- `GetTestDouble`
-- `GetTestString`
-- `GetTestInfo`
-
-广播接口：
-
-- `OnTestBoolChanged`
-- `OnTestIntChanged`
-- `OnTestDoubleChanged`
-- `OnTestStringChanged`
-- `OnTestInfoChanged`
-
-基本流程如下：
+普通数据通过 D-Bus 方法调用和广播信号完成同步：
 
 1. client 调用 `Set`
 2. service 更新状态
-3. service 发出广播
-4. client 收到广播后，再主动调用一次对应的 `Get`
-5. client 用 `Get` 的结果更新本地缓存
+3. service 发送 `OnTest*Changed`
+4. client 收到广播后再次调用对应的 `Get`
+5. client 用最新结果更新本地缓存
+
+这种方式避免客户端只依赖广播载荷，保证最终状态以服务端为准。
 
 ### 2. 文件传输
 
-文件传输不直接把大块数据放进 D-Bus 消息，而是采用：
+文件内容不直接放进 D-Bus 消息，而是采用“控制面走 D-Bus、数据面走共享内存”的方式：
 
-- 共享内存传输实际分片数据
-- D-Bus 只传控制参数
+- D-Bus 传控制参数
+- 共享内存传分片数据
+- 分片大小固定为 `1KB`
+- 服务端最终做 MD5 校验和落盘
 
-当前规则如下：
+上传方向：
 
-- 共享内存大小固定为 `1KB`
-- client 将文件按 `1KB` 分片
-- 每次把一片写入共享内存后，同步调用 `SendFileChunk`
-- service 收到后读取共享内存内容，追加写入临时文件
-- 全部分片完成后，service 使用 `md5sum` 校验文件完整性
-- 校验通过后，文件保存到 `server` 可执行文件所在目录
+- 客户端写共享内存
+- 服务端读共享内存
 
-同名文件并发规则：
+下载方向：
 
-- 不同文件名允许并发发送
-- 同名文件如果已有活跃传输，后来的直接拒绝
+- 客户端先创建共享内存
+- 服务端只打开并写入共享内存
+- 客户端再读取共享内存
 
-## 依赖环境
+这样做的原因是：在真实 `systemd + system bus` 场景下，服务端和客户端可能不是同一用户。  
+如果下载时由服务端重新创建共享内存，容易触发权限问题。当前代码已经按这个约束修正过。
 
-需要以下基础工具：
+## 运行前需要什么
 
-- `cmake`
-- `g++`
-- `pkg-config`
-- `gdbus-codegen`
-- `gio-2.0`
-- `glib-2.0`
-- `gobject-2.0`
-- `gio-unix-2.0`
-- `dbus-run-session` 或 `dbus-daemon`
-- `md5sum`
+### 环境要求
 
-在 Ubuntu / Debian 系环境下，可以安装：
+- Linux 系统
+- 系统已经启动全局 `system bus`
+- 安装以下依赖：
+  - `cmake`
+  - `g++`
+  - `pkg-config`
+  - `libglib2.0-dev`
+  - `dbus`
+
+Ubuntu / Debian 可直接安装：
 
 ```bash
 sudo apt update
 sudo apt install -y build-essential cmake pkg-config libglib2.0-dev dbus
 ```
 
-## 构建方式
+### 权限要求
+
+运行前需要满足两类权限：
+
+1. D-Bus 权限  
+   服务端必须被允许在 `system bus` 上占用 `com.example.Training`。
+
+2. 可执行权限  
+   至少保证下面这些文件可执行：
 
 ```bash
-cmake -S . -B build
-cmake --build build -j$(nproc)
+chmod 755 ./build/ServiceProject/app/server
+chmod 755 ./build/ClientProject/training_client
 ```
 
-编译完成后，主要产物为：
+如果是通过 `cmake --build` 生成，一般会自动带上正确权限。
+
+## 如何配置和编译
+
+项目提供了两个部署文件：
+
+- `deploy/dbus/com.example.Training.conf`
+- `deploy/systemd/training.service.in`
+
+它们的作用分别是：
+
+- `com.example.Training.conf`
+  给全局 `system bus` 增加 policy，允许服务端占用服务名，也允许客户端调用服务。
+- `training.service.in`
+  用于生成 `systemd` 服务，适合车机或长期运行场景。
+
+### 构建项目
+
+```bash
+cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DBUILD_STAGE=ALL \
+      --no-warn-unused-cli -S gdbus-learn -B build -G "CodeBlocks - Unix Makefiles"
+cmake --build build --config Release --target all -j$(nproc)
+```
+
+主要产物：
 
 - `build/ServiceProject/app/server`
 - `build/ServiceProject/Library/libtraining.so`
 - `build/ClientProject/training_client`
 
-## 快速运行
-
-最简单的单终端演示方式：
+### 安装 system bus policy
 
 ```bash
-dbus-run-session -- bash
-./build/ServiceProject/app/server
+sudo cmake --install build
+sudo systemctl restart dbus
 ```
 
-另开一个终端进入同一个 shell 会话不方便时，更建议使用下面的多终端方式。
+执行完成后，默认会安装：
 
-## 多终端运行与单步调试
+- `/usr/share/dbus-1/system.d/com.example.Training.conf`
+- `/usr/lib/systemd/system/training.service`
+- `/usr/local/libexec/training/server`
 
-如果要完成以下场景：
-
-- 一个终端运行 `server`
-- 一个终端使用 `gdb` 单步调试 `server`
-- 另外一个或多个终端运行 `training_client`
-
-那么不要只用：
+如果想确认 policy 已安装：
 
 ```bash
-dbus-run-session -- bash
+ls -l /usr/share/dbus-1/system.d/com.example.Training.conf
 ```
 
-因为它只对当前 shell 生效，不适合多个独立终端共享。
+## 如何启动例程
 
-更适合的方法是手动启动一个共享的 session bus。
+### 方式 1：手动前台启动服务端
 
-### 1. 在任意终端启动 bus
-
-```bash
-dbus-daemon --session --fork --print-address=1 --print-pid=1
-```
-
-它会输出两行内容，类似：
-
-```text
-unix:path=/tmp/dbus-xxxx,guid=yyyy
-12345
-```
-
-第一行是 `DBUS_SESSION_BUS_ADDRESS`，第二行是 bus 进程的 pid。
-
-### 2. 在所有需要参与联调的终端里设置同一个环境变量
-
-```bash
-export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/dbus-xxxx,guid=yyyy'
-```
-
-### 3. 启动服务端
-
-普通运行：
+这是开发调试最直接的方式。
 
 ```bash
 ./build/ServiceProject/app/server
 ```
 
-或使用 `gdb` 单步调试：
+> *_若出现`training_service error: failed to own D-Bus name "com.example.Training": name already owned or denied by bus policy`_
+>
+>_请关闭系统服务`sudo systemctl stop training.service`_
+
+特点：
+
+- 服务端是手动启动的
+- 连接 `system bus` 是自动完成的
+- 不需要设置环境变量
+- 关闭时直接按 `Ctrl+C`
+
+### 方式 2：作为 systemd 服务启动
 
 ```bash
-gdb ./build/ServiceProject/app/server
+sudo systemctl daemon-reload
+sudo systemctl enable --now training.service
+systemctl status training.service
 ```
 
-### 4. 在其他终端启动客户端
+更适合真实设备部署。
+
+### 验证服务是否已注册到全局 system bus
+
+```bash
+gdbus introspect --system --dest com.example.Training --object-path /com/example/Training
+```
+
+如果能看到 `SetTestInt`、`GetTestInt`、`SendFileChunk`、`BeginFileDownload`、`ReadFileChunk` 等接口，就说明服务已经真正挂到全局 `system bus` 上。
+
+## 如何测试例程
+
+### 1. 自动化测试
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+当前主要覆盖：
+
+- 基础 `Set/Get`
+- 广播同步
+- 上传
+- 下载
+- 并发传输
+- 覆盖下载
+- 超时恢复
+- 可继承客户端
+- 重复启动服务端占名失败
+
+### 2. 手动交互测试
+
+先启动服务端：
+
+```bash
+./build/ServiceProject/app/server
+```
+
+再开一个终端运行客户端：
 
 ```bash
 ./build/ClientProject/training_client
 ```
 
-可以同时打开多个终端运行多个 client，它们都会连接到同一个 D-Bus session。
+#### 基础通信测试
 
-### 5. 结束后关闭 bus
+在客户端菜单输入：
 
-```bash
-kill 12345
+```text
+2
+123
 ```
 
-这里的 `12345` 换成前面输出的实际 pid。
+表示执行 `SetTestInt(123)`。
 
-## 命令行演示
+如果再开一个客户端终端，也运行 `training_client`，应能看到广播：
 
-`training_client` 提供了一个简单的命令行菜单，可以演示：
-
-- `SetTestBool`
-- `SetTestInt`
-- `SetTestDouble`
-- `SetTestString`
-- `SetTestInfo`
-- `GetTestBool`
-- `GetTestInt`
-- `GetTestDouble`
-- `GetTestString`
-- `GetTestInfo`
-- `SendFilePath`
-
-典型验证流程：
-
-1. 在 client A 中执行 `SetTestInt`
-2. 在 client B 中看到广播日志
-3. 在 client B 中执行 `GetTestInt`
-4. 读取到最新值
-
-文件发送流程：
-
-1. 在菜单里选择发送文件
-2. 输入本地文件路径
-3. client 分片写入共享内存
-4. service 读取、组包、校验并保存
-
-## 测试
-
-项目当前包含以下回归测试：
-
-- `client_wrapper_roundtrip`
-- `file_transfer_roundtrip`
-- `concurrent_file_transfer_roundtrip`
-- `inheritable_client_roundtrip`
-
-运行方式：
-
-```bash
-cd build
-ctest --output-on-failure
+```text
+[Listener] OnTestIntChanged: 123
 ```
 
-## 可继承客户端
+然后输入：
 
-`TrainingClient` 被设计成可以继续继承，便于后续扩展 UI 或自定义行为。
+```text
+7
+```
 
-子类可以重写：
+应看到：
 
-- `OnTestBoolChanged`
-- `OnTestIntChanged`
-- `OnTestDoubleChanged`
-- `OnTestStringChanged`
-- `OnTestInfoChanged`
+```text
+GetTestInt -> 123
+```
 
-以及远端通知入口：
+#### 上传/下载测试
 
-- `OnRemoteTestBoolChanged`
-- `OnRemoteTestIntChanged`
-- `OnRemoteTestDoubleChanged`
-- `OnRemoteTestStringChanged`
-- `OnRemoteTestInfoChanged`
+先准备一个小文件：
 
-这样后续如果接入 Qt 或其他界面层，可以直接在子类里接入自己的刷新逻辑，而不需要修改底层动态库。
+```bash
+printf 'hello-system-bus\n' > /tmp/manual_upload.txt
+```
 
-## 当前项目特点
+如果要验证负载文件，可以再创建一个 1MB 文件：
 
-这个项目不是为了追求最少代码量，而是为了把几个实际工程里常见的问题串起来：
+```bash
+dd if=/dev/zero of=/tmp/manual_upload_1mb.bin bs=1K count=1024
+```
 
-- 双工程组织方式
-- 公共接口抽象
-- `gdbus-codegen` 的使用
-- 动态库封装与运行时加载
-- 广播回调与本地缓存同步
-- 共享内存文件传输
-- 多终端联调
-- 面向后续 UI 扩展的继承设计
+客户端菜单上传：
+
+```text
+11
+/tmp/manual_upload.txt
+manual/demo.txt
+```
+
+客户端下载：
+
+```text
+12
+manual/demo.txt
+/tmp/manual_download.txt
+```
+
+检查结果：
+
+```bash
+cat /tmp/manual_download.txt
+```
+
+如果使用 1MB 文件，建议再校验一次：
+
+```bash
+cmp -s /tmp/manual_upload_1mb.bin /tmp/manual_download.txt && echo files-match
+```
+
+### 3. 新系统最小验收流程
+
+如果是一台全新 Linux 机器，按这 6 步即可：
+
+1. 安装依赖
+2. 编译项目
+3. `sudo cmake --install build`
+4. `sudo systemctl restart dbus`
+5. 手动运行 `./build/ServiceProject/app/server`
+6. 运行 `./build/ClientProject/training_client` 做交互验证
+
+## 常见问题
+
+### 1. 服务端启动报 `AccessDenied`
+
+说明 system bus policy 没装好，或者装完后没有重载 `dbus`。
+
+先检查：
+
+```bash
+ls -l /usr/share/dbus-1/system.d/com.example.Training.conf
+sudo systemctl restart dbus
+```
+
+### 2. 客户端报 `failed to create Training proxy`
+
+通常说明：
+
+- 服务端没启动
+- 服务端没有成功注册到 `system bus`
+
+先检查：
+
+```bash
+systemctl status training.service
+gdbus introspect --system --dest com.example.Training --object-path /com/example/Training
+```
+
+### 3. 下载时报共享内存 `Permission denied`
+
+这是 system bus 场景里要特别注意的问题。
+
+常见原因：
+
+- 服务端和客户端用不同用户运行
+- 下载共享内存的创建方和打开方处理不当
+
+当前项目已经按“客户端下载先创建、服务端只打开写入”的方式修复过这个问题。  
+如果后续修改下载流程、切换 `systemd` 用户、或者改共享内存逻辑，这部分必须回归验证。

@@ -170,63 +170,62 @@ target_link_libraries(training_library_api_types
 add_test(
     NAME client_wrapper_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "$<TARGET_FILE:server> > /tmp/client_wrapper_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:client_wrapper_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; $<TARGET_FILE:server> > /tmp/client_wrapper_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:client_wrapper_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; exit \$status"
 )
 
 add_test(
     NAME file_transfer_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/file_transfer_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:file_transfer_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/file_transfer_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:file_transfer_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
     NAME concurrent_file_transfer_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/concurrent_file_transfer_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:concurrent_file_transfer_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/concurrent_file_transfer_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:concurrent_file_transfer_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
     NAME download_file_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_file_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_file_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_file_roundtrip_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_file_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
     NAME download_missing_file_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_missing_file_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_missing_file_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_missing_file_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_missing_file_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
     NAME download_overwrite_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_overwrite_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_overwrite_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; $<TARGET_FILE:server> > /tmp/download_overwrite_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:download_overwrite_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
     NAME upload_timeout_recovery_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; TRAINING_TRANSFER_TIMEOUT_MS=200 $<TARGET_FILE:server> > /tmp/upload_timeout_recovery_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:upload_timeout_recovery_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; server_dir=\$(dirname \"$<TARGET_FILE:server>\"); rm -rf \"\$server_dir\"/file; mkdir -p \"\$server_dir\"/file; TRAINING_TRANSFER_TIMEOUT_MS=200 $<TARGET_FILE:server> > /tmp/upload_timeout_recovery_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:upload_timeout_recovery_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; rm -rf \"\$server_dir\"/file; exit \$status"
 )
 
 add_test(
     NAME inheritable_client_roundtrip
     COMMAND
-        dbus-run-session
-        -- bash -lc
-        "$<TARGET_FILE:server> > /tmp/inheritable_client_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:inheritable_client_smoke>; status=\$?; kill \$server_pid; wait \$server_pid 2>/dev/null; exit \$status"
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; $<TARGET_FILE:server> > /tmp/inheritable_client_server.log 2>&1 & server_pid=\$!; sleep 1; $<TARGET_FILE:inheritable_client_smoke>; status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; exit \$status"
+)
+
+add_test(
+    NAME duplicate_server_rejected
+    COMMAND
+        bash -lc
+        "readarray -t bus_info < <(dbus-daemon --session --fork --print-address=1 --print-pid=1); export DBUS_SYSTEM_BUS_ADDRESS=\"\${bus_info[0]}\"; export DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/training-invalid-session-bus'; $<TARGET_FILE:server> > /tmp/duplicate_server_primary.log 2>&1 & server_pid=\$!; sleep 1; timeout 2s $<TARGET_FILE:server> > /tmp/duplicate_server_secondary.log 2>&1; second_status=\$?; kill \$server_pid 2>/dev/null; wait \$server_pid 2>/dev/null; kill \"\${bus_info[1]}\" 2>/dev/null; wait \"\${bus_info[1]}\" 2>/dev/null; if [ \$second_status -eq 0 ] || [ \$second_status -eq 124 ]; then exit 1; fi; exit 0"
 )

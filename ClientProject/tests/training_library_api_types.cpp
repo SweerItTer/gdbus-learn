@@ -3,6 +3,9 @@
 
 #include <type_traits>
 
+// ---------------------------------------------------------------------------
+// C API 类型约束
+// ---------------------------------------------------------------------------
 using ExpectedSetTestInfoFn =
     bool (*)(TrainingLibraryHandle*, const training::public_api::TestInfo*);
 using ExpectedGetTestInfoFn =
@@ -29,6 +32,7 @@ static_assert(std::is_same_v<TrainingSendFileBufferFn, ExpectedSendFileBufferFn>
 static_assert(std::is_same_v<TrainingDownloadFileFn, ExpectedDownloadFileFn>,
               "TrainingDownloadFileFn should download a remote file to a local path");
 
+// 只要编译通过，说明公开函数签名没有被破坏。
 int main() {
     return 0;
 }

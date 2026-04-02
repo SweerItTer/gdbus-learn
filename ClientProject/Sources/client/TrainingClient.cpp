@@ -154,19 +154,6 @@ public_api::TestInfo TrainingClient::GetTestInfo() {
     return result;
 }
 
-bool TrainingClient::SendFile(unsigned char* file_buf, size_t file_size) {
-    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
-    // 旧接口没有额外的远端路径参数，因此默认把 buffer 作为 upload_buffer.bin 发送到根目录。
-    if (!api_.send_file_buffer(handle_,
-                               file_buf,
-                               static_cast<unsigned long long>(file_size),
-                               "upload_buffer.bin",
-                               "upload_buffer.bin")) {
-        ThrowLastError("failed to call Training_SendFileBuffer: ");
-    }
-    return true;
-}
-
 bool TrainingClient::SendFileByPath(const std::string& file_path, const std::string& remote_relative_path) {
     std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     // remote_relative_path 允许为空，库层会自动退化成 basename。
@@ -280,7 +267,7 @@ void TrainingClient::DispatchRemoteTestInfoChanged(void* user_data, const public
 }
 
 TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
-    // 所有符号在构造时一次性解析，失败则尽早暴露，避免运行到业务路径中途才报缺符号。
+    // 构造时一次性解析全部导出符号。
     Api api{};
     api.create = ResolveSymbol<TrainingCreateFn>(library_handle, "Training_Create");
     api.destroy = ResolveSymbol<TrainingDestroyFn>(library_handle, "Training_Destroy");
@@ -310,6 +297,7 @@ TrainingClient::Api TrainingClient::LoadApi(void* library_handle) {
 
 // 在此注册信号触发的回调(更新数据)
 void TrainingClient::RegisterListener() {
+    // 注册远端回调。
     TrainingListenerCallbacks callbacks{};
     callbacks.user_data = this;
     callbacks.on_test_bool_changed = &TrainingClient::DispatchRemoteTestBoolChanged;
@@ -321,7 +309,7 @@ void TrainingClient::RegisterListener() {
 }
 
 void TrainingClient::StartEventPump() {
-    // 交互式 CLI 可能长期阻塞在用户输入上，因此单独起线程持续泵 GMainContext。
+    // 后台线程持续泵事件。
     stop_event_pump_.store(false);
     event_pump_thread_ = std::thread([this]() {
         while (!stop_event_pump_.load()) {
@@ -337,6 +325,7 @@ void TrainingClient::StartEventPump() {
 }
 
 void TrainingClient::StopEventPump() {
+    // 先停线程，再释放资源。
     stop_event_pump_.store(true);
     if (event_pump_thread_.joinable()) {
         event_pump_thread_.join();

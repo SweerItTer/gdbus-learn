@@ -66,6 +66,7 @@ inline std::string ReadCommandOutput(const std::string& command) {
 // 统一的 MD5 计算入口。
 // 上传前客户端先算一次，服务端组包完成后再算一次，两边结果必须完全一致。
 inline std::string ComputeMd5(const std::filesystem::path& file_path) {
+    // 使用 md5sum 工具
     const std::string output = ReadCommandOutput("md5sum " + ShellQuote(file_path.string()));
     const auto space = output.find(' ');
     if (space == std::string::npos) {
