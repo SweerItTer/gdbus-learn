@@ -154,19 +154,6 @@ public_api::TestInfo TrainingClient::GetTestInfo() {
     return result;
 }
 
-bool TrainingClient::SendFile(unsigned char* file_buf, size_t file_size) {
-    std::lock_guard<std::recursive_mutex> lock(api_mutex_);
-    // 旧接口没有额外的远端路径参数，因此默认把 buffer 作为 upload_buffer.bin 发送到根目录。
-    if (!api_.send_file_buffer(handle_,
-                               file_buf,
-                               static_cast<unsigned long long>(file_size),
-                               "upload_buffer.bin",
-                               "upload_buffer.bin")) {
-        ThrowLastError("failed to call Training_SendFileBuffer: ");
-    }
-    return true;
-}
-
 bool TrainingClient::SendFileByPath(const std::string& file_path, const std::string& remote_relative_path) {
     std::lock_guard<std::recursive_mutex> lock(api_mutex_);
     // remote_relative_path 允许为空，库层会自动退化成 basename。

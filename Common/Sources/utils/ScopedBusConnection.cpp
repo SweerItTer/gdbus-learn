@@ -7,6 +7,7 @@ namespace training::utils {
 
 ScopedBusConnection::ScopedBusConnection(GBusType bus_type) {
     GError* raw_error = nullptr;
+    // 根据连接类型 bus_type 创建 GDBusConnection 
     connection_.reset(g_bus_get_sync(bus_type, nullptr, &raw_error));
     UniqueGError error(raw_error);
 
@@ -16,6 +17,7 @@ ScopedBusConnection::ScopedBusConnection(GBusType bus_type) {
     }
 }
 
+// 获取原始 GDBusConnection
 GDBusConnection* ScopedBusConnection::Get() const {
     return connection_.get();
 }

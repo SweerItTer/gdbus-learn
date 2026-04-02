@@ -2,6 +2,7 @@
 
 #include <public/DbusConstants.hpp>
 #include <utils/ContractSerializer.hpp>
+#include <utils/DbusRuntime.hpp>
 #include <utils/FileTransferUtils.hpp>
 
 #include <chrono>
@@ -93,7 +94,7 @@ TrainingLibraryClient::TrainingLibraryClient() {
     // 动态库内部直接持有一个 proxy，后续所有 D-Bus 调用都经由这条连接发出。
     proxy_.reset(detail::CallWithError(
         [&](GError** error) {
-            return training_proxy_new_for_bus_sync(G_BUS_TYPE_SESSION,
+            return training_proxy_new_for_bus_sync(utils::kBusType,
                                                    G_DBUS_PROXY_FLAGS_NONE,
                                                    training::kBusName,
                                                    training::kObjectPath,

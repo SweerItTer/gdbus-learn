@@ -1,5 +1,6 @@
 #include <public/TrainingLibraryApi.hpp>
 #include <public/DbusConstants.hpp>
+#include <utils/DbusRuntime.hpp>
 #include <utils/FileTransferUtils.hpp>
 #include <utils/GLibWrappers.hpp>
 
@@ -60,7 +61,7 @@ int main() {
         fs::remove_all(server_target.parent_path());
 
         GError* raw_error = nullptr;
-        GDBusConnection* raw_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &raw_error);
+        GDBusConnection* raw_connection = g_bus_get_sync(utils::kBusType, nullptr, &raw_error);
         utils::UniqueGObject<GDBusConnection> connection(raw_connection);
         utils::UniqueGError proxy_error(raw_error);
         if (proxy_error != nullptr) {

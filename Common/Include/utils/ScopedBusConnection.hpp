@@ -19,6 +19,7 @@ public:
     [[nodiscard]] GDBusConnection* Get() const;
 
 private:
+    // RAII 封装
     UniqueGObject<GDBusConnection> connection_;
 };
 
